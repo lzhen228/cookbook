@@ -33,7 +33,23 @@
       "Bash(node packages/cli/bin/index.js --mock score 1001)",
       "Bash(node packages/cli/bin/index.js --mock alert list --page=1 --size=20)",
       "Bash(node packages/cli/bin/index.js --mock report generate 1001)",
-      "Bash(node packages/cli/bin/index.js --mock -f json profile 1001)"
+      "Bash(node packages/cli/bin/index.js --mock -f json profile 1001)",
+      "Bash(find services/api/src -name \"*.java\" -exec cat {} +)",
+      "Bash(find services/api/src -name \"*.xml\" -path \"*/mapper/*\" -exec cat {} +)",
+      "Bash(find services/frontend/src -name \"*.tsx\" -o -name \"*.ts\" -exec cat {} +)",
+      "Bash(find services/api/src/main/resources/db/migration -name \"*.sql\" -exec cat {} +)",
+      "Bash(ls services/api/src/main/resources/*.yml services/api/Dockerfile services/frontend/Dockerfile services/frontend/vite.config.ts services/frontend/tsconfig.json docker-compose.yml .env.example)",
+      "Bash(xargs cat:*)",
+      "Bash(xargs wc:*)",
+      "Bash(find D:/gitStore/cookbook-test/services/frontend -name *.tsx -o -name *.ts)",
+      "Bash(find D:/gitStore/cookbook-test/services -name *.tsx -o -name *.ts)",
+      "Bash(find D:/gitStore/cookbook-test/services/api/src/main/resources/db -name *.sql)",
+      "Bash(wc -l D:/gitStore/cookbook-test/packages/cli/src/**/*.ts D:/gitStore/cookbook-test/packages/cli/src/*.ts)",
+      "Bash(find /d/gitStore/cookbook-test/services/api -name *.xml -o -name application*.yml -o -name application*.yaml)",
+      "Bash(pnpm add:*)",
+      "Bash(npx vitest:*)",
+      "Bash(chmod +x D:/gitStore/cookbook-test/ci/check-backend-coverage.sh D:/gitStore/cookbook-test/ci/check-frontend-coverage.sh)",
+      "Bash(bash ci/check-frontend-coverage.sh)"
     ]
   }
 }

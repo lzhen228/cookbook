@@ -1,0 +1,174 @@
+# ============================================================================
+# GitLab CI/CD — 供应链风险管理平台 (SCRM)
+# ============================================================================
+#
+# Runner 环境要求：
+#   - Docker executor（推荐）或 Shell executor
+#   - Docker-in-Docker 不要求（无镜像构建）
+#   - 最低 Runner 标签：无特殊标签，使用默认 shared runner 即可
+#   - 缓存存储：Runner 本地缓存 或 S3/GCS 分布式缓存
+#
+# Runner 镜像要求：
+#   - Java 17 jobs:  eclipse-temurin:17-jdk
+#   - Node.js jobs:  node:20-slim + pnpm
+#
+# 流水线设计：
+#   lint → test → coverage（串行 stage，任一失败即拦截 MR）
+#
+# 触发条件：
+#   - MR 目标为 main/develop → 全量运行
+#   - push 到 main/develop → 全量运行
+# ============================================================================
+
+stages:
+  - lint
+  - test
+  - coverage
+
+# ───────────────────────── 全局变量 ─────────────────────────
+variables:
+  MAVEN_OPTS: >-
+    -Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository
+    -Dorg.slf4j.simpleLogger.showDateTime=true
+  MAVEN_CLI_OPTS: "--batch-mode --errors --fail-at-end"
+  PNPM_VERSION: "9"
+  NODE_VERSION: "20"
+
+# ───────────────────────── 缓存模板 ─────────────────────────
+.cache-maven: &cache-maven
+  cache:
+    key: maven-${CI_COMMIT_REF_SLUG}
+    paths:
+      - .m2/repository/
+    policy: pull-push
+
+.cache-pnpm: &cache-pnpm
+  cache:
+    key: pnpm-${CI_COMMIT_REF_SLUG}
+    paths:
+      - services/frontend/node_modules/
+      - .pnpm-store/
+    policy: pull-push
+
+# ───────────────────────── 触发规则 ─────────────────────────
+.rules-mr-or-main: &rules-mr-or-main
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH =~ /^(main|develop)$/
+
+# ============================================================================
+# Stage 1: LINT — 代码规范检查
+# ============================================================================
+
+# ---- 后端 Checkstyle（Google Java Style） ----
+lint:backend:
+  stage: lint
+  image: eclipse-temurin:17-jdk
+  <<: *cache-maven
+  <<: *rules-mr-or-main
+  script:
+    - cd services/api
+    - ./mvnw $MAVEN_CLI_OPTS checkstyle:check -Dcheckstyle.config.location=google_checks.xml
+  allow_failure: false
+
+# ---- 前端 ESLint + TypeScript 编译检查 ----
+lint:frontend:
+  stage: lint
+  image: node:20-slim
+  <<: *cache-pnpm
+  <<: *rules-mr-or-main
+  before_script:
+    - corepack enable
+    - corepack prepare pnpm@${PNPM_VERSION} --activate
+    - cd services/frontend
+    - pnpm install --frozen-lockfile
+  script:
+    # ESLint 零警告模式
+    - pnpm lint
+    # TypeScript 编译检查（不输出文件，仅校验类型）
+    - npx tsc --noEmit
+  allow_failure: false
+
+# ============================================================================
+# Stage 2: TEST — 测试执行
+# ============================================================================
+
+# ---- 后端 JUnit5 + Mockito ----
+test:backend:
+  stage: test
+  image: eclipse-temurin:17-jdk
+  <<: *cache-maven
+  <<: *rules-mr-or-main
+  script:
+    - cd services/api
+    # 运行测试并生成 JaCoCo 覆盖率报告
+    - ./mvnw $MAVEN_CLI_OPTS test
+  artifacts:
+    when: always
+    paths:
+      - services/api/target/surefire-reports/
+      - services/api/target/site/jacoco/
+    reports:
+      junit: services/api/target/surefire-reports/TEST-*.xml
+    expire_in: 30 days
+  allow_failure: false
+
+# ---- 前端 Vitest + MSW + React Testing Library ----
+test:frontend:
+  stage: test
+  image: node:20-slim
+  <<: *cache-pnpm
+  <<: *rules-mr-or-main
+  before_script:
+    - corepack enable
+    - corepack prepare pnpm@${PNPM_VERSION} --activate
+    - cd services/frontend
+    - pnpm install --frozen-lockfile
+  script:
+    # 运行测试并生成覆盖率报告（JSON + text）
+    - pnpm test:coverage -- --reporter=junit --outputFile=test-results.xml
+  artifacts:
+    when: always
+    paths:
+      - services/frontend/coverage/
+    reports:
+      junit: services/frontend/test-results.xml
+    expire_in: 30 days
+  allow_failure: false
+
+# ============================================================================
+# Stage 3: COVERAGE — 覆盖率校验（强制核心模块 ≥70%）
+# ============================================================================
+
+# ---- 后端覆盖率校验 ----
+coverage:backend:
+  stage: coverage
+  image: eclipse-temurin:17-jdk
+  <<: *rules-mr-or-main
+  needs:
+    - test:backend
+  script:
+    - cd services/api
+    # 使用 JaCoCo check 目标强制校验覆盖率阈值
+    - >
+      ./mvnw $MAVEN_CLI_OPTS jacoco:check
+      -Djacoco.check.lineRatio=0.70
+      -Djacoco.check.branchRatio=0.60
+    # 备用：调用自定义脚本做细粒度包级校验
+    - bash ../../ci/check-backend-coverage.sh
+  allow_failure: false
+  coverage: '/Total.*?([0-9]{1,3})%/'
+
+# ---- 前端覆盖率校验 ----
+coverage:frontend:
+  stage: coverage
+  image: node:20-slim
+  <<: *rules-mr-or-main
+  needs:
+    - test:frontend
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq jq > /dev/null 2>&1
+  script:
+    - bash ci/check-frontend-coverage.sh
+  allow_failure: false
+  coverage: '/All files.*?\|.*?(\d+\.?\d*)\s*\|/'

@@ -1,0 +1,213 @@
+# ============================================================================
+# GitHub Actions CI — 供应链风险管理平台 (SCRM)
+# ============================================================================
+#
+# Runner 环境要求：
+#   - GitHub-hosted runners: ubuntu-latest（推荐）
+#   - Self-hosted runners: Linux x86_64, Docker 可选
+#   - 预装工具：git, curl, jq（ubuntu-latest 默认已有）
+#
+# 流水线设计：
+#   lint → test → coverage（严格串行，任一失败即拦截 PR）
+#
+# 触发条件：
+#   - PR 目标为 main/develop
+#   - push 到 main/develop
+# ============================================================================
+
+name: CI Pipeline
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main, develop]
+
+# 同一 PR/分支只保留最新运行，取消旧的
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# 最小权限原则
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
+env:
+  JAVA_VERSION: "17"
+  NODE_VERSION: "20"
+  PNPM_VERSION: "9"
+
+jobs:
+  # ══════════════════════════════════════════════════════════════
+  # Stage 1: LINT — 代码规范检查
+  # ══════════════════════════════════════════════════════════════
+
+  lint-backend:
+    name: "Lint · Backend (Checkstyle)"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/api
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+          cache-dependency-path: services/api/pom.xml
+
+      - name: Run Checkstyle (Google Java Style)
+        run: ./mvnw --batch-mode checkstyle:check -Dcheckstyle.config.location=google_checks.xml
+
+  lint-frontend:
+    name: "Lint · Frontend (ESLint + TSC)"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: ESLint (zero warnings)
+        run: pnpm lint
+
+      - name: TypeScript compile check
+        run: npx tsc --noEmit
+
+  # ══════════════════════════════════════════════════════════════
+  # Stage 2: TEST — 测试执行
+  # ══════════════════════════════════════════════════════════════
+
+  test-backend:
+    name: "Test · Backend (JUnit5 + Mockito)"
+    needs: [lint-backend]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/api
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+          cache-dependency-path: services/api/pom.xml
+
+      - name: Run tests with JaCoCo coverage
+        run: ./mvnw --batch-mode test
+
+      - name: Upload JaCoCo coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backend-coverage
+          path: services/api/target/site/jacoco/
+          retention-days: 30
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backend-test-results
+          path: services/api/target/surefire-reports/
+          retention-days: 30
+
+      # 在 PR 上发布 JUnit 测试报告
+      - name: Publish test report
+        uses: mikepenz/action-junit-report@v4
+        if: always()
+        with:
+          report_paths: services/api/target/surefire-reports/TEST-*.xml
+          check_name: "Backend Test Results"
+          fail_on_failure: true
+
+  test-frontend:
+    name: "Test · Frontend (Vitest + MSW + RTL)"
+    needs: [lint-frontend]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run tests with coverage
+        run: pnpm test:coverage
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: frontend-coverage
+          path: services/frontend/coverage/
+          retention-days: 30
+
+  # ══════════════════════════════════════════════════════════════
+  # Stage 3: COVERAGE — 覆盖率校验（核心模块 ≥70%）
+  # ══════════════════════════════════════════════════════════════
+
+  coverage-backend:
+    name: "Coverage · Backend (≥70%)"
+    needs: [test-backend]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download coverage artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-coverage
+          path: services/api/target/site/jacoco/
+
+      - name: Check backend coverage thresholds
+        run: bash ci/check-backend-coverage.sh
+
+  coverage-frontend:
+    name: "Coverage · Frontend (≥70%)"
+    needs: [test-frontend]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download coverage artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-coverage
+          path: services/frontend/coverage/
+
+      - name: Check frontend coverage thresholds
+        run: bash ci/check-frontend-coverage.sh

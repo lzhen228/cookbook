@@ -19,7 +19,7 @@ import { ArrowLeftOutlined, DownloadOutlined } from '@ant-design/icons';
 import { HealthBadge } from '@/components/HealthBadge';
 import { RiskDimensionTag } from '@/components/RiskDimensionTag';
 import { useSupplierProfile, useSupplierTab, useReportDownloadUrl } from '@/hooks/useSupplierProfile';
-import { formatScore, formatTrend, formatDateTime, formatDate } from '@/utils/formatters';
+import { formatScore, formatDateTime, formatDate } from '@/utils/formatters';
 import { COOPERATION_STATUS_CONFIG, RISK_EVENT_STATUS_CONFIG } from '@/constants/healthLevel';
 import type { TabName, RiskEventBrief, RiskDimension } from '@/types/supplier.types';
 
@@ -213,7 +213,7 @@ function ReportDownloadButton({
   supplierId: number;
   reportStatus: string;
 }) {
-  const { data: downloadData, refetch } = useReportDownloadUrl(
+  const { refetch } = useReportDownloadUrl(
     supplierId,
     false,
   );
