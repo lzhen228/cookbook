@@ -1,0 +1,9 @@
+{
+  "name": "@scrm/root",
+  "private": true,
+  "scripts": {
+    "build:cli": "pnpm --filter @scrm/cli build",
+    "dev:cli": "pnpm --filter @scrm/cli dev"
+  },
+  "devDependencies": {}
+}

@@ -1,0 +1,30 @@
+#!/bin/sh
+# Maven Wrapper script for Unix/macOS/Git Bash on Windows
+
+set -e
+
+MAVEN_PROJECTBASEDIR="${MAVEN_BASEDIR:-$(cd "$(dirname "$0")" && pwd)}"
+MAVEN_WRAPPER_JAR="$MAVEN_PROJECTBASEDIR/.mvn/wrapper/maven-wrapper.jar"
+MAVEN_WRAPPER_PROPERTIES="$MAVEN_PROJECTBASEDIR/.mvn/wrapper/maven-wrapper.properties"
+
+# Determine JAVA_HOME
+if [ -z "$JAVA_HOME" ]; then
+  if [ -d "/c/Program Files/Eclipse Adoptium/jdk-17.0.18.8-hotspot" ]; then
+    JAVA_HOME="/c/Program Files/Eclipse Adoptium/jdk-17.0.18.8-hotspot"
+  fi
+fi
+
+if [ -n "$JAVA_HOME" ]; then
+  JAVACMD="$JAVA_HOME/bin/java"
+else
+  JAVACMD="java"
+fi
+
+if [ ! -f "$MAVEN_WRAPPER_JAR" ]; then
+  echo "Error: Maven wrapper JAR not found at $MAVEN_WRAPPER_JAR"
+  exit 1
+fi
+
+exec "$JAVACMD" \
+  -jar "$MAVEN_WRAPPER_JAR" \
+  "$@"

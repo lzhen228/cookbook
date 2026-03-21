@@ -1,0 +1,39 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cmd.exe /c \"java -version\")",
+      "Bash(cmd.exe /c \"mvn -version\")",
+      "Bash(cmd.exe /c \"docker -v\")",
+      "Bash(cmd.exe /c \"docker compose version\")",
+      "Bash(where.exe java:*)",
+      "Bash(where.exe mvn:*)",
+      "Bash(where.exe docker:*)",
+      "Bash(winget install:*)",
+      "Bash(pnpm install:*)",
+      "Bash(curl -L -o /tmp/maven.zip \"https://dlcdn.apache.org/maven/maven-3/3.9.6/binaries/apache-maven-3.9.6-bin.zip\")",
+      "Read(//tmp/**)",
+      "Bash(chmod +x D:/gitStore/cookbook-test/services/api/mvnw)",
+      "Bash(\"/c/Program Files/Docker/Docker/resources/bin/docker.exe\" -v)",
+      "Bash(\"/c/Program Files/Docker/Docker/Docker Desktop.exe\" --version)",
+      "Read(//c/Program Files/**)",
+      "Bash(pnpm build:*)",
+      "Bash(pnpm link:*)",
+      "Bash(pnpm setup:*)",
+      "Bash(export PNPM_HOME=\"C:/Users/lzhen/AppData/Local/pnpm\")",
+      "Bash(export PATH=\"$PNPM_HOME:$PATH\")",
+      "Bash(node bin/index.js --help)",
+      "Bash(pnpm dev:*)",
+      "Bash(npm link:*)",
+      "Bash(risk-supplier --help)",
+      "Bash(npx tsc:*)",
+      "Bash(npm install:*)",
+      "Bash(node -e \"const r = require\\(''ioredis''\\); console.log\\(typeof r, typeof r.default, Object.keys\\(r\\).slice\\(0,10\\)\\)\")",
+      "Bash(pnpm --filter @scrm/cli build)",
+      "Bash(node packages/cli/bin/index.js --mock profile 1001)",
+      "Bash(node packages/cli/bin/index.js --mock score 1001)",
+      "Bash(node packages/cli/bin/index.js --mock alert list --page=1 --size=20)",
+      "Bash(node packages/cli/bin/index.js --mock report generate 1001)",
+      "Bash(node packages/cli/bin/index.js --mock -f json profile 1001)"
+    ]
+  }
+}

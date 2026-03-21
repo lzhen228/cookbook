@@ -1,0 +1,7 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:scrm_test}
+
+logging:
+  level:
+    com.supply.risk: DEBUG

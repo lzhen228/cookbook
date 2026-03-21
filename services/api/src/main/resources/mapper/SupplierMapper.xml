@@ -1,0 +1,128 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.supply.risk.mapper.SupplierMapper">
+
+    <!-- 公共筛选条件片段 -->
+    <sql id="filterConditions">
+        <where>
+            <if test="params.keyword != null and params.keyword != ''">
+                AND s.name % #{params.keyword}
+            </if>
+            <if test="params.healthLevels != null and params.healthLevels.size() > 0">
+                AND s.health_level_cache IN
+                <foreach collection="params.healthLevels" item="level" open="(" separator="," close=")">
+                    #{level}
+                </foreach>
+            </if>
+            <if test="params.cooperationStatuses != null and params.cooperationStatuses.size() > 0">
+                AND s.cooperation_status IN
+                <foreach collection="params.cooperationStatuses" item="status" open="(" separator="," close=")">
+                    #{status}
+                </foreach>
+            </if>
+            <if test="params.regionProvince != null and params.regionProvince != ''">
+                AND s.region_province = #{params.regionProvince}
+            </if>
+            <if test="params.listedStatus != null and params.listedStatus != ''">
+                AND s.listed_status = #{params.listedStatus}
+            </if>
+            <if test="params.isChinaTop500 != null">
+                AND s.is_china_top500 = #{params.isChinaTop500}
+            </if>
+            <if test="params.isWorldTop500 != null">
+                AND s.is_world_top500 = #{params.isWorldTop500}
+            </if>
+            <if test="params.supplierTypes != null and params.supplierTypes.size() > 0">
+                AND s.supplier_type IN
+                <foreach collection="params.supplierTypes" item="type" open="(" separator="," close=")">
+                    #{type}
+                </foreach>
+            </if>
+            <if test="params.natures != null and params.natures.size() > 0">
+                AND s.nature IN
+                <foreach collection="params.natures" item="n" open="(" separator="," close=")">
+                    #{n}
+                </foreach>
+            </if>
+            <if test="params.supplyItemsJson != null and params.supplyItemsJson != ''">
+                AND s.supply_items @> #{params.supplyItemsJson}::jsonb
+            </if>
+            <if test="params.isFollowed != null">
+                AND s.is_followed = #{params.isFollowed}
+            </if>
+            <!-- 游标分页条件：cursor 存在时追加 -->
+            <if test="params.cursorScore != null and params.cursorId != null">
+                AND (
+                    s.health_score_cache > #{params.cursorScore}
+                    OR (s.health_score_cache = #{params.cursorScore} AND s.id > #{params.cursorId})
+                )
+            </if>
+            <!-- DESC 游标分页条件 -->
+            <if test="params.cursorScoreDesc != null and params.cursorIdDesc != null">
+                AND (
+                    s.health_score_cache &lt; #{params.cursorScoreDesc}
+                    OR (s.health_score_cache = #{params.cursorScoreDesc} AND s.id &lt; #{params.cursorIdDesc})
+                )
+            </if>
+        </where>
+    </sql>
+
+    <!-- 供应商列表查询（游标分页 + 动态筛选） -->
+    <select id="selectSupplierList" resultType="com.supply.risk.model.entity.Supplier">
+        SELECT
+            s.id,
+            s.name,
+            s.health_level_cache,
+            s.health_score_cache,
+            s.week_trend_cache,
+            s.region_province,
+            s.region_city,
+            s.cooperation_status,
+            s.listed_status,
+            s.is_followed,
+            s.cache_updated_at
+        FROM supplier s
+        <include refid="filterConditions"/>
+        ORDER BY ${params.sortColumn} ${params.sortDirection}, s.id ${params.sortDirection}
+        LIMIT #{params.pageSize}
+        <if test="params.offset != null">
+            OFFSET #{params.offset}
+        </if>
+    </select>
+
+    <!-- 供应商列表计数 -->
+    <select id="countSupplierList" resultType="long">
+        SELECT COUNT(*)
+        FROM supplier s
+        <include refid="filterConditions"/>
+    </select>
+
+    <!-- 供应商画像详情 -->
+    <select id="selectProfileById" resultType="com.supply.risk.model.entity.Supplier">
+        SELECT
+            s.id,
+            s.name,
+            s.unified_code,
+            s.cooperation_status,
+            s.region_province,
+            s.region_city,
+            s.listed_status,
+            s.is_china_top500,
+            s.is_world_top500,
+            s.supplier_type,
+            s.nature,
+            s.supply_items,
+            s.is_followed,
+            s.ext_data,
+            s.health_score_cache,
+            s.health_level_cache,
+            s.week_trend_cache,
+            s.cache_updated_at,
+            s.created_at,
+            s.updated_at
+        FROM supplier s
+        WHERE s.id = #{supplierId}
+    </select>
+
+</mapper>

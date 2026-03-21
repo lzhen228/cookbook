@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.supply.risk.mapper.SupplierHealthSnapshotMapper">
+
+    <!-- 查询供应商最新快照 -->
+    <select id="selectLatestBySupplier" resultType="com.supply.risk.model.entity.SupplierHealthSnapshot">
+        SELECT
+            shs.id,
+            shs.supplier_id,
+            shs.plan_id,
+            shs.health_score,
+            shs.health_level,
+            shs.dimension_scores,
+            shs.snapshot_date,
+            shs.created_at
+        FROM supplier_health_snapshot shs
+        WHERE shs.supplier_id = #{supplierId}
+        ORDER BY shs.snapshot_date DESC
+        LIMIT 1
+    </select>
+
+</mapper>

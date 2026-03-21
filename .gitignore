@@ -1,0 +1,32 @@
+# Compiled
+target/
+*.class
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.project
+.classpath
+.settings/
+
+# Environment
+.env
+.env.local
+*.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Maven
+*.jar
+*.war
+
+# Node (frontend)
+node_modules/
+dist/
+.pnpm-store/

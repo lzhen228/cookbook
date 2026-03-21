@@ -1,0 +1,36 @@
+version: "3.9"
+
+services:
+  # ========== PostgreSQL 15 ==========
+  postgres:
+    image: postgres:15-alpine
+    container_name: scrm-postgres
+    environment:
+      POSTGRES_DB: scrm
+      POSTGRES_USER: scrm_user
+      POSTGRES_PASSWORD: scrm_dev_123
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scrm_user -d scrm"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ========== Redis 7 ==========
+  redis:
+    image: redis:7-alpine
+    container_name: scrm-redis
+    command: redis-server --requirepass scrm_dev_123
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "scrm_dev_123", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:

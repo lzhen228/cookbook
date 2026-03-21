@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.supply.risk.mapper.RiskEventMapper">
+
+    <!-- 查询供应商最近风险事项 -->
+    <select id="selectRecentBySupplier" resultType="com.supply.risk.model.entity.RiskEvent">
+        SELECT
+            re.id,
+            re.supplier_id,
+            re.indicator_id,
+            re.risk_dimension,
+            re.description,
+            re.status,
+            re.triggered_at,
+            re.source_url
+        FROM risk_event re
+        WHERE re.supplier_id = #{supplierId}
+        ORDER BY re.triggered_at DESC
+        LIMIT #{limit}
+    </select>
+
+    <!-- 统计供应商风险事项总数 -->
+    <select id="countBySupplier" resultType="int">
+        SELECT COUNT(*)
+        FROM risk_event re
+        WHERE re.supplier_id = #{supplierId}
+    </select>
+
+</mapper>

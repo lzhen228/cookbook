@@ -1,0 +1,12 @@
+spring:
+  flyway:
+    clean-disabled: false
+
+logging:
+  level:
+    com.supply.risk: DEBUG
+
+management:
+  endpoint:
+    health:
+      show-details: always

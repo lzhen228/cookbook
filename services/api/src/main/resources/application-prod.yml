@@ -1,0 +1,8 @@
+spring:
+  flyway:
+    clean-disabled: true
+
+logging:
+  level:
+    root: WARN
+    com.supply.risk: INFO
