@@ -1,0 +1,122 @@
+global:
+  # 全局 SMTP 配置（邮件告警）
+  smtp_smarthost: "${SMTP_HOST}:587"
+  smtp_from: "scrm-alert@company.com"
+  smtp_auth_username: "${SMTP_USERNAME}"
+  smtp_auth_password: "${SMTP_PASSWORD}"
+  smtp_require_tls: true
+
+  # 全局 resolve timeout（告警恢复后等待确认的时间）
+  resolve_timeout: 5m
+
+# 告警模板文件
+templates:
+  - "/etc/alertmanager/templates/*.tmpl"
+
+# ============================================================
+# 路由规则：按 severity 和 team 分发到不同接收者
+# ============================================================
+route:
+  # 相同告警在 5min 内合并为一条
+  group_by: ["alertname", "env", "team"]
+  group_wait: 30s        # 新分组等待 30s 以便合并
+  group_interval: 5m     # 同一分组重复发送间隔
+  repeat_interval: 4h    # 相同告警未恢复时重复告警间隔
+
+  # 默认接收者
+  receiver: "email-ops"
+
+  routes:
+    # Critical 级别：同时发企微 + 邮件
+    - match:
+        severity: critical
+      receiver: "wechat-and-email-critical"
+      group_wait: 10s      # critical 告警缩短等待时间
+      repeat_interval: 1h  # 未恢复每小时重复告警
+
+    # Warning 级别：仅发邮件
+    - match:
+        severity: warning
+      receiver: "email-ops"
+      repeat_interval: 4h
+
+    # DBA 相关告警
+    - match:
+        team: dba
+      receiver: "email-dba"
+      continue: true  # 继续匹配其他路由（同时发 critical 企微）
+
+    # Ops 相关告警
+    - match:
+        team: ops
+      receiver: "email-ops"
+      continue: true
+
+# ============================================================
+# 告警抑制规则
+# ============================================================
+inhibit_rules:
+  # 服务宕机时，抑制该服务的所有 warning 级别告警
+  - source_match:
+      severity: "critical"
+      alertname: "ScrmApiDown"
+    target_match:
+      severity: "warning"
+    equal: ["instance"]
+
+  # PostgreSQL 不可达时，抑制慢查询和连接数告警
+  - source_match:
+      alertname: "PostgresDown"
+    target_match_re:
+      alertname: "Postgres.*"
+    equal: ["instance"]
+
+  # Redis 不可达时，抑制命中率告警
+  - source_match:
+      alertname: "RedisDown"
+    target_match_re:
+      alertname: "Redis.*"
+    equal: ["instance"]
+
+# ============================================================
+# 接收者配置
+# ============================================================
+receivers:
+
+  # ---------- Critical：企微 + 邮件 ----------
+  - name: "wechat-and-email-critical"
+    webhook_configs:
+      - url: "${WECHAT_WEBHOOK_URL}"
+        send_resolved: true
+        http_config:
+          tls_config:
+            insecure_skip_verify: false
+        # 使用自定义企微模板
+        title: '{{ template "wechat.title" . }}'
+        text: '{{ template "wechat.text" . }}'
+        max_alerts: 10  # 单次最多发送 10 条告警
+
+    email_configs:
+      - to: "${ALERT_EMAIL_CRITICAL}"
+        send_resolved: true
+        subject: '{{ template "email.subject" . }}'
+        html: '{{ template "email.html" . }}'
+        headers:
+          X-Priority: "1"
+          Importance: "high"
+
+  # ---------- Ops 邮件 ----------
+  - name: "email-ops"
+    email_configs:
+      - to: "${ALERT_EMAIL_OPS}"
+        send_resolved: true
+        subject: '{{ template "email.subject" . }}'
+        html: '{{ template "email.html" . }}'
+
+  # ---------- DBA 邮件 ----------
+  - name: "email-dba"
+    email_configs:
+      - to: "${ALERT_EMAIL_DBA}"
+        send_resolved: true
+        subject: '{{ template "email.subject" . }}'
+        html: '{{ template "email.html" . }}'

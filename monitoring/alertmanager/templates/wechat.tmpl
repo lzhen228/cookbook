@@ -1,0 +1,66 @@
+{{/* ============================================================
+  企业微信告警模板
+  支持：告警触发 / 告警恢复
+  ============================================================ */}}
+
+{{/* 告警标题 */}}
+{{ define "wechat.title" -}}
+  {{- if eq .Status "firing" -}}
+    🔴 [{{ .CommonLabels.env | toUpper }}] {{ .CommonLabels.alertname }} 告警触发
+  {{- else -}}
+    ✅ [{{ .CommonLabels.env | toUpper }}] {{ .CommonLabels.alertname }} 已恢复
+  {{- end -}}
+{{- end }}
+
+{{/* 告警正文（Markdown 格式，企微支持） */}}
+{{ define "wechat.text" -}}
+{{- if eq .Status "firing" -}}
+## 🔴 告警详情
+
+**环境：** `{{ .CommonLabels.env }}`
+**级别：** `{{ .CommonLabels.severity | toUpper }}`
+**告警名：** `{{ .CommonLabels.alertname }}`
+**触发时间：** {{ (.Alerts.Firing | first).StartsAt.Local.Format "2006-01-02 15:04:05" }}
+**告警数量：** {{ .Alerts.Firing | len }} 条
+
+---
+
+{{ range .Alerts.Firing -}}
+**📌 实例：** `{{ .Labels.instance }}`
+{{- if .Labels.uri }}
+**📍 接口：** `{{ .Labels.method }} {{ .Labels.uri }}`
+{{- end }}
+{{- if .Labels.consumergroup }}
+**📦 消费组：** `{{ .Labels.consumergroup }}`
+**📫 Topic：** `{{ .Labels.topic }}`
+{{- end }}
+{{- if .Labels.host }}
+**🖥️ 主机：** `{{ .Labels.host }}`
+{{- end }}
+**📝 摘要：** {{ .Annotations.summary }}
+**📊 详情：** {{ .Annotations.description }}
+
+{{- if .Annotations.runbook_url }}
+**🔗 排查手册：** [点击查看]({{ .Annotations.runbook_url }})
+{{- end }}
+
+**🔍 监控大盘：** [Grafana 查看](http://grafana.company.com/d/scrm-overview?orgId=1&var-env={{ .Labels.env }})
+**📋 告警日志：** [Alertmanager](http://alertmanager.company.com/#/alerts)
+
+{{ end -}}
+
+---
+> 此告警由 SCRM 监控系统自动发送，请勿直接回复
+
+{{- else -}}
+## ✅ 告警已恢复
+
+**环境：** `{{ .CommonLabels.env }}`
+**告警名：** `{{ .CommonLabels.alertname }}`
+**恢复时间：** {{ (.Alerts.Resolved | first).EndsAt.Local.Format "2006-01-02 15:04:05" }}
+**持续时长：** {{ duration ((.Alerts.Resolved | first).StartsAt) ((.Alerts.Resolved | first).EndsAt) }}
+
+所有相关实例已恢复正常，无需进一步操作。
+
+{{- end }}
+{{- end }}

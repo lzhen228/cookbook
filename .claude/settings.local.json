@@ -49,7 +49,11 @@
       "Bash(pnpm add:*)",
       "Bash(npx vitest:*)",
       "Bash(chmod +x D:/gitStore/cookbook-test/ci/check-backend-coverage.sh D:/gitStore/cookbook-test/ci/check-frontend-coverage.sh)",
-      "Bash(bash ci/check-frontend-coverage.sh)"
+      "Bash(bash ci/check-frontend-coverage.sh)",
+      "Bash(xargs grep:*)",
+      "Bash(find /d/gitStore/cookbook-test/services/api/src/main/java -type f -name *Kafka* -o -name *kafka*)",
+      "Bash(grep -E \"\\\\.\\(xml|sql\\)$\")",
+      "Bash(wc -l D:/gitStore/cookbook-test/infra/terraform/**/**/*.tf D:/gitStore/cookbook-test/infra/terraform/**/**/*.tpl D:/gitStore/cookbook-test/infra/terraform/scripts/deploy.sh)"
     ]
   }
 }

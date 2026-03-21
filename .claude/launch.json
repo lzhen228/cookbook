@@ -1,0 +1,19 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "SCRM Frontend (Vite)",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["dev"],
+      "port": 3000,
+      "cwd": "services/frontend"
+    },
+    {
+      "name": "SCRM API (Spring Boot)",
+      "runtimeExecutable": "./mvnw",
+      "runtimeArgs": ["spring-boot:run"],
+      "port": 8080,
+      "cwd": "services/api"
+    }
+  ]
+}

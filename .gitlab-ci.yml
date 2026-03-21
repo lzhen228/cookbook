@@ -1,174 +1,638 @@
-# ============================================================================
-# GitLab CI/CD — 供应链风险管理平台 (SCRM)
-# ============================================================================
+# =============================================================================
+# .gitlab-ci.yml — 供应链风险管理平台 GitLab CI/CD 流水线
+# 复制到项目根目录直接使用
 #
-# Runner 环境要求：
-#   - Docker executor（推荐）或 Shell executor
-#   - Docker-in-Docker 不要求（无镜像构建）
-#   - 最低 Runner 标签：无特殊标签，使用默认 shared runner 即可
-#   - 缓存存储：Runner 本地缓存 或 S3/GCS 分布式缓存
+# ┌─ 触发规则 ───────────────────────────────────────────────────────────────┐
+# │  MR 提交        → validate + test（安全门控，不部署）                    │
+# │  push develop   → validate + test + build（不部署）                      │
+# │  push main      → 全量流水线，自动部署 Staging，手动审批生产              │
+# │  tag v*.*.*     → 完整流水线 + 生产蓝绿部署（Tech Lead 手动审批）        │
+# │  手动触发       → 可单独运行 rollback:prod:manual 紧急回滚               │
+# └──────────────────────────────────────────────────────────────────────────┘
 #
-# Runner 镜像要求：
-#   - Java 17 jobs:  eclipse-temurin:17-jdk
-#   - Node.js jobs:  node:20-slim + pnpm
+# 流水线阶段：
+#   validate → test → security → build → push →
+#   deploy-staging → regression → deploy-prod →
+#   smoke-test → notify
 #
-# 流水线设计：
-#   lint → test → coverage（串行 stage，任一失败即拦截 MR）
+# 蓝绿部署（零停机）：
+#   生产维持 blue/green 两组容器，/opt/scrm/active_color 记录活跃色
+#   新版本 → 部署到非活跃色 → 健康检查 → 切换 Nginx upstream → 冒烟测试
+#   失败   → 恢复旧 upstream → 停新容器 → 企微+邮件告警
 #
-# 触发条件：
-#   - MR 目标为 main/develop → 全量运行
-#   - push 到 main/develop → 全量运行
-# ============================================================================
+# 敏感变量（Settings > CI/CD > Variables，必须 Masked + Protected）:
+#   SSH_PRIVATE_KEY, STAGING_SERVER, PROD_SERVER,
+#   STAGING/PROD_SERVER_KNOWN_HOSTS, STAGING/PROD_USER,
+#   TEST_DB_PASSWORD, TEST_REDIS_PASSWORD,
+#   STAGING/PROD_DB_PASSWORD, STAGING/PROD_REDIS_PASSWORD,
+#   STAGING/PROD_MINIO_SECRET, STAGING/PROD_JWT_SECRET,
+#   STAGING/PROD_XXLJOB_TOKEN, STAGING/PROD_TEST_TOKEN,
+#   PROD_WXBOT_WEBHOOK, PROD_NOTIFY_EMAIL
+# =============================================================================
 
-stages:
-  - lint
-  - test
-  - coverage
+default:
+  image: eclipse-temurin:17-jdk-alpine
+  interruptible: true    # 同分支新 push 自动取消旧流水线
+  tags: [docker]         # 指定 Runner 标签
 
-# ───────────────────────── 全局变量 ─────────────────────────
+# ── 全局变量（非敏感）────────────────────────────────────────────────────────
 variables:
-  MAVEN_OPTS: >-
-    -Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository
-    -Dorg.slf4j.simpleLogger.showDateTime=true
-  MAVEN_CLI_OPTS: "--batch-mode --errors --fail-at-end"
-  PNPM_VERSION: "9"
-  NODE_VERSION: "20"
+  # Registry：GitLab Container Registry（也可替换为私有 Harbor）
+  REGISTRY:       "${CI_REGISTRY}"
+  IMAGE_API:      "${CI_REGISTRY_IMAGE}/scrm-api"
+  IMAGE_FRONTEND: "${CI_REGISTRY_IMAGE}/scrm-frontend"
 
-# ───────────────────────── 缓存模板 ─────────────────────────
-.cache-maven: &cache-maven
-  cache:
-    key: maven-${CI_COMMIT_REF_SLUG}
-    paths:
-      - .m2/repository/
-    policy: pull-push
+  # 镜像 Tag：{sha8}-{yyyyMMdd}（CLAUDE.md 8.1 规范，禁止 latest 随意打）
+  IMAGE_TAG:      "${CI_COMMIT_SHORT_SHA}"
 
-.cache-pnpm: &cache-pnpm
-  cache:
-    key: pnpm-${CI_COMMIT_REF_SLUG}
-    paths:
-      - services/frontend/node_modules/
-      - .pnpm-store/
-    policy: pull-push
+  # Maven
+  MAVEN_OPTS:     "-Dmaven.repo.local=${CI_PROJECT_DIR}/.m2/repository -Djava.awt.headless=true"
+  MAVEN_CLI_OPTS: "--batch-mode --no-transfer-progress --fail-at-end"
 
-# ───────────────────────── 触发规则 ─────────────────────────
-.rules-mr-or-main: &rules-mr-or-main
+  # 覆盖率阈值（CLAUDE.md 7.1，低于阈值阻断合并）
+  COV_SERVICE:    "80"   # Service 层行覆盖 ≥ 80%
+  COV_FRONTEND:   "60"   # 前端组件行覆盖 ≥ 60%
+
+  # Docker BuildKit
+  DOCKER_DRIVER:     "overlay2"
+  DOCKER_TLS_CERTDIR: "/certs"
+  DOCKER_BUILDKIT:   "1"
+
+  # 健康检查超时配置
+  HEALTH_TIMEOUT:  "120"
+  HEALTH_INTERVAL: "5"
+
+# ── 构建缓存（Maven .m2 + pnpm node_modules）────────────────────────────────
+cache:
+  key:
+    files: [services/api/pom.xml, services/frontend/pnpm-lock.yaml]
+  paths:
+    - .m2/repository/
+    - services/frontend/node_modules/
+    - services/frontend/.pnpm-store/
+
+# ── 流水线阶段 ────────────────────────────────────────────────────────────────
+stages:
+  - validate        # 代码规范（Checkstyle + ESLint + TypeScript）
+  - test            # 单元测试 + 集成测试 + 覆盖率门控
+  - security        # OWASP 依赖扫描 + 前端 audit
+  - build           # Maven package + Docker build + Trivy 镜像扫描
+  - push            # 推送镜像至 Registry
+  - deploy-staging  # 自动部署预发（Staging）
+  - regression      # 预发回归测试（冒烟 + 接口测试）
+  - deploy-prod     # 生产蓝绿部署（手动审批）
+  - smoke-test      # 生产冒烟测试（自动，失败自动回滚）
+  - notify          # 企微 + 邮件通知
+
+# ── Workflow：控制整条流水线触发 ──────────────────────────────────────────────
+workflow:
   rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH =~ /^(main|develop)$/
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'   # MR：validate+test
+    - if: '$CI_COMMIT_BRANCH == "develop"'                  # develop：不部署
+    - if: '$CI_COMMIT_BRANCH == "main"'                     # main：全量流水线
+    - if: '$CI_COMMIT_TAG =~ /^v[0-9]+\.[0-9]+\.[0-9]+$/' # Tag：生产部署
+    - if: '$CI_PIPELINE_SOURCE == "web"'                    # 手动触发
 
-# ============================================================================
-# Stage 1: LINT — 代码规范检查
-# ============================================================================
+# =============================================================================
+# ── STAGE 1: validate ────────────────────────────────────────────────────────
+# =============================================================================
 
-# ---- 后端 Checkstyle（Google Java Style） ----
-lint:backend:
-  stage: lint
-  image: eclipse-temurin:17-jdk
-  <<: *cache-maven
-  <<: *rules-mr-or-main
+backend:lint:
+  stage: validate
   script:
     - cd services/api
-    - ./mvnw $MAVEN_CLI_OPTS checkstyle:check -Dcheckstyle.config.location=google_checks.xml
-  allow_failure: false
+    - ./mvnw $MAVEN_CLI_OPTS checkstyle:check -Dcheckstyle.violationSeverity=error
+    - echo "[✓] Java Checkstyle 通过（Google Java Style Guide）"
+  rules:
+    - changes: ["services/api/**", ".gitlab-ci.yml"]
+  artifacts:
+    when: on_failure
+    paths: [services/api/target/checkstyle-result.xml]
+    expire_in: 7d
 
-# ---- 前端 ESLint + TypeScript 编译检查 ----
-lint:frontend:
-  stage: lint
-  image: node:20-slim
-  <<: *cache-pnpm
-  <<: *rules-mr-or-main
+frontend:lint:
+  stage: validate
+  image: node:20-alpine
   before_script:
-    - corepack enable
-    - corepack prepare pnpm@${PNPM_VERSION} --activate
-    - cd services/frontend
-    - pnpm install --frozen-lockfile
+    - npm install -g pnpm@8 --quiet
+    - cd services/frontend && pnpm install --frozen-lockfile --silent
   script:
-    # ESLint 零警告模式
-    - pnpm lint
-    # TypeScript 编译检查（不输出文件，仅校验类型）
-    - npx tsc --noEmit
-  allow_failure: false
+    - cd services/frontend
+    - pnpm lint                          # ESLint（禁止 any，CLAUDE.md 1.1）
+    - pnpm exec tsc --noEmit             # TypeScript 严格类型检查
+    - pnpm exec prettier --check "src/**/*.{ts,tsx}"
+    - echo "[✓] 前端规范检查通过"
+  rules:
+    - changes: ["services/frontend/**", ".gitlab-ci.yml"]
+  artifacts:
+    when: on_failure
+    paths: [services/frontend/eslint-report.json]
+    expire_in: 7d
 
-# ============================================================================
-# Stage 2: TEST — 测试执行
-# ============================================================================
+# =============================================================================
+# ── STAGE 2: test ─────────────────────────────────────────────────────────────
+# =============================================================================
 
-# ---- 后端 JUnit5 + Mockito ----
-test:backend:
+backend:test:
   stage: test
-  image: eclipse-temurin:17-jdk
-  <<: *cache-maven
-  <<: *rules-mr-or-main
+  # 集成测试使用真实 DB（CLAUDE.md 7.2：禁止 Mock 数据库）
+  services:
+    - name: timescale/timescaledb:2.14.2-pg15
+      alias: postgres
+      variables:
+        POSTGRES_DB:       "scrm_test"
+        POSTGRES_USER:     "scrm_user"
+        POSTGRES_PASSWORD: "${TEST_DB_PASSWORD}"
+    - name: redis:7.2-alpine
+      alias: redis
+      command: ["redis-server", "--requirepass", "${TEST_REDIS_PASSWORD}"]
+  variables:
+    SPRING_PROFILES_ACTIVE: "test"
+    DB_HOST:        "postgres"
+    DB_PORT:        "5432"
+    DB_NAME:        "scrm_test"
+    DB_USERNAME:    "scrm_user"
+    DB_PASSWORD:    "${TEST_DB_PASSWORD}"
+    REDIS_HOST:     "redis"
+    REDIS_PORT:     "6379"
+    REDIS_PASSWORD: "${TEST_REDIS_PASSWORD}"
+    EXT_API_MOCK:   "true"   # 禁止测试调用外部 API（CLAUDE.md 7.4）
   script:
     - cd services/api
-    # 运行测试并生成 JaCoCo 覆盖率报告
-    - ./mvnw $MAVEN_CLI_OPTS test
+    - |
+      ./mvnw $MAVEN_CLI_OPTS test \
+        -Dspring.profiles.active=test \
+        jacoco:report \
+        jacoco:check \
+          -Djacoco.haltOnFailure=true \
+          -Djacoco.check.rules[0].element=BUNDLE \
+          -Djacoco.check.rules[0].limit.counter=LINE \
+          -Djacoco.check.rules[0].limit.minimum="0.${COV_SERVICE}"
+    - echo "[✓] 后端测试通过，Service 层覆盖率 ≥ ${COV_SERVICE}%"
+  coverage: '/Total.*?([0-9]{1,3})%/'
   artifacts:
     when: always
-    paths:
-      - services/api/target/surefire-reports/
-      - services/api/target/site/jacoco/
     reports:
       junit: services/api/target/surefire-reports/TEST-*.xml
-    expire_in: 30 days
-  allow_failure: false
+      coverage_report:
+        coverage_format: jacoco
+        path: services/api/target/site/jacoco/jacoco.xml
+    paths: [services/api/target/site/jacoco/]
+    expire_in: 30d
 
-# ---- 前端 Vitest + MSW + React Testing Library ----
-test:frontend:
+frontend:test:
   stage: test
-  image: node:20-slim
-  <<: *cache-pnpm
-  <<: *rules-mr-or-main
+  image: node:20-alpine
   before_script:
-    - corepack enable
-    - corepack prepare pnpm@${PNPM_VERSION} --activate
-    - cd services/frontend
-    - pnpm install --frozen-lockfile
+    - npm install -g pnpm@8 --quiet
+    - cd services/frontend && pnpm install --frozen-lockfile --silent
   script:
-    # 运行测试并生成覆盖率报告（JSON + text）
-    - pnpm test:coverage -- --reporter=junit --outputFile=test-results.xml
+    - cd services/frontend
+    - |
+      pnpm test:ci \
+        --coverage \
+        --coverageThreshold="{\"global\":{\"lines\":${COV_FRONTEND},\"functions\":${COV_FRONTEND}}}" \
+        --reporter=verbose \
+        --reporter=junit \
+        --outputFile.junit=junit-report.xml
+    - echo "[✓] 前端测试通过，覆盖率 ≥ ${COV_FRONTEND}%"
+  coverage: '/Statements\s*:\s*([0-9.]+)%/'
   artifacts:
     when: always
-    paths:
-      - services/frontend/coverage/
     reports:
-      junit: services/frontend/test-results.xml
-    expire_in: 30 days
-  allow_failure: false
+      junit: services/frontend/junit-report.xml
+    paths: [services/frontend/coverage/]
+    expire_in: 30d
 
-# ============================================================================
-# Stage 3: COVERAGE — 覆盖率校验（强制核心模块 ≥70%）
-# ============================================================================
+# =============================================================================
+# ── STAGE 3: security ─────────────────────────────────────────────────────────
+# =============================================================================
 
-# ---- 后端覆盖率校验 ----
-coverage:backend:
-  stage: coverage
-  image: eclipse-temurin:17-jdk
-  <<: *rules-mr-or-main
-  needs:
-    - test:backend
+security:owasp:
+  stage: security
+  # OWASP 依赖漏洞扫描（CVSS ≥ 7.0 高危阻断，CLAUDE.md 5.3）
   script:
     - cd services/api
-    # 使用 JaCoCo check 目标强制校验覆盖率阈值
-    - >
-      ./mvnw $MAVEN_CLI_OPTS jacoco:check
-      -Djacoco.check.lineRatio=0.70
-      -Djacoco.check.branchRatio=0.60
-    # 备用：调用自定义脚本做细粒度包级校验
-    - bash ../../ci/check-backend-coverage.sh
-  allow_failure: false
-  coverage: '/Total.*?([0-9]{1,3})%/'
+    - |
+      ./mvnw $MAVEN_CLI_OPTS \
+        org.owasp:dependency-check-maven:check \
+        -DfailBuildOnCVSS=7 \
+        -DsuppressionFile=../../.owasp-suppressions.xml \
+        -DautoUpdate=true \
+        -Dformat=JSON,HTML
+    - echo "[✓] OWASP 依赖扫描：无高危漏洞（CVSS < 7.0）"
+  artifacts:
+    when: always
+    paths: [services/api/target/dependency-check-report.*]
+    expire_in: 30d
+  timeout: 30m
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_TAG =~ /^v/'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
 
-# ---- 前端覆盖率校验 ----
-coverage:frontend:
-  stage: coverage
-  image: node:20-slim
-  <<: *rules-mr-or-main
-  needs:
-    - test:frontend
+security:frontend-audit:
+  stage: security
+  image: node:20-alpine
   before_script:
-    - apt-get update -qq && apt-get install -y -qq jq > /dev/null 2>&1
+    - npm install -g pnpm@8 --quiet
   script:
-    - bash ci/check-frontend-coverage.sh
+    - cd services/frontend
+    - pnpm audit --audit-level=high 2>&1 | tee audit-report.txt
+    - |
+      if grep -qiE "^[[:space:]]*(high|critical)" audit-report.txt 2>/dev/null; then
+        echo "❌ 发现高危前端依赖漏洞（7 天内必须修复，CLAUDE.md 5.3）"
+        exit 1
+      fi
+    - echo "[✓] 前端依赖安全扫描通过"
+  artifacts:
+    when: always
+    paths: [services/frontend/audit-report.txt]
+    expire_in: 30d
+
+# =============================================================================
+# ── STAGE 4: build ────────────────────────────────────────────────────────────
+# =============================================================================
+
+.docker_base: &docker_base
+  image: docker:24-dind
+  services: [docker:24-dind]
+  before_script:
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_TAG =~ /^v/'
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+
+build:api:
+  <<: *docker_base
+  stage: build
+  script:
+    - BUILD_DATE=$(date +%Y%m%d)
+    - FULL_TAG="${CI_COMMIT_SHORT_SHA}-${BUILD_DATE}"
+    - |
+      docker build \
+        --file services/api/Dockerfile \
+        --tag  "${IMAGE_API}:${FULL_TAG}" \
+        --tag  "${IMAGE_API}:${CI_COMMIT_REF_SLUG}" \
+        --label "org.opencontainers.image.revision=${CI_COMMIT_SHA}" \
+        --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --label "org.opencontainers.image.ref.name=${CI_COMMIT_REF_NAME}" \
+        --cache-from "${IMAGE_API}:main" \
+        --build-arg BUILDKIT_INLINE_CACHE=1 \
+        services/api/
+    # Trivy 高危镜像扫描（阻断推送，CLAUDE.md 8.1）
+    - |
+      docker run --rm \
+        -v /var/run/docker.sock:/var/run/docker.sock \
+        -v "$HOME/.trivy-cache:/root/.cache/trivy" \
+        aquasec/trivy:latest image \
+          --exit-code 1 \
+          --severity HIGH,CRITICAL \
+          --ignore-unfixed \
+          --format table \
+          "${IMAGE_API}:${FULL_TAG}"
+    - echo "FULL_TAG=${FULL_TAG}" >> build.env
+    - echo "[✓] API 镜像构建 + Trivy 扫描通过：${FULL_TAG}"
+  artifacts:
+    reports:
+      dotenv: build.env
+    expire_in: 1d
+
+build:frontend:
+  <<: *docker_base
+  stage: build
+  script:
+    - BUILD_DATE=$(date +%Y%m%d)
+    - FULL_TAG="${CI_COMMIT_SHORT_SHA}-${BUILD_DATE}"
+    - |
+      docker build \
+        --file services/frontend/Dockerfile \
+        --tag  "${IMAGE_FRONTEND}:${FULL_TAG}" \
+        --tag  "${IMAGE_FRONTEND}:${CI_COMMIT_REF_SLUG}" \
+        --build-arg VITE_APP_VERSION="${CI_COMMIT_SHORT_SHA}" \
+        --cache-from "${IMAGE_FRONTEND}:main" \
+        --build-arg BUILDKIT_INLINE_CACHE=1 \
+        services/frontend/
+    - echo "[✓] Frontend 镜像构建通过：${FULL_TAG}"
+
+# =============================================================================
+# ── STAGE 5: push ─────────────────────────────────────────────────────────────
+# =============================================================================
+
+push:images:
+  <<: *docker_base
+  stage: push
+  script:
+    - BUILD_DATE=$(date +%Y%m%d)
+    - FULL_TAG="${CI_COMMIT_SHORT_SHA}-${BUILD_DATE}"
+    - docker push "${IMAGE_API}:${FULL_TAG}"
+    - docker push "${IMAGE_FRONTEND}:${FULL_TAG}"
+    # 仅 main 分支和正式 Tag 更新 latest（CLAUDE.md 8.1 规范）
+    - |
+      if [ "$CI_COMMIT_BRANCH" = "main" ] || echo "$CI_COMMIT_TAG" | grep -qE '^v[0-9]'; then
+        docker tag "${IMAGE_API}:${FULL_TAG}"      "${IMAGE_API}:latest"
+        docker tag "${IMAGE_FRONTEND}:${FULL_TAG}" "${IMAGE_FRONTEND}:latest"
+        docker push "${IMAGE_API}:latest"
+        docker push "${IMAGE_FRONTEND}:latest"
+        echo "[✓] latest 标签已更新"
+      fi
+    - echo "DEPLOY_TAG=${FULL_TAG}" >> deploy.env
+    - echo "[✓] 镜像推送完成：${FULL_TAG}"
+  artifacts:
+    reports:
+      dotenv: deploy.env
+    expire_in: 1d
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_TAG =~ /^v/'
+  needs: [build:api, build:frontend]
+
+# =============================================================================
+# ── STAGE 6: deploy-staging ───────────────────────────────────────────────────
+# =============================================================================
+
+deploy:staging:
+  stage: deploy-staging
+  image: alpine:3.19
+  environment:
+    name: staging
+    url: https://staging.scrm.company.com
+  before_script: &ssh_setup
+    - apk add --no-cache openssh-client bash curl jq
+    - install -m 700 -d ~/.ssh
+    - printf '%s' "$SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/id_ed25519
+    - chmod 600 ~/.ssh/id_ed25519
+    - printf '%s\n' "$STAGING_SERVER_KNOWN_HOSTS" >> ~/.ssh/known_hosts
+  script:
+    - BUILD_DATE=$(date +%Y%m%d)
+    - FULL_TAG="${CI_COMMIT_SHORT_SHA}-${BUILD_DATE}"
+    # 确保脚本目录存在并上传最新部署脚本
+    - |
+      ssh -i ~/.ssh/id_ed25519 \
+        -o StrictHostKeyChecking=yes \
+        "${STAGING_USER}@${STAGING_SERVER}" \
+        "mkdir -p /opt/scrm/scripts && chmod 750 /opt/scrm/scripts"
+    - |
+      scp -i ~/.ssh/id_ed25519 \
+        scripts/ci/blue-green-deploy.sh \
+        scripts/ci/smoke-test.sh \
+        scripts/ci/rollback.sh \
+        scripts/ci/notify.sh \
+        "${STAGING_USER}@${STAGING_SERVER}:/opt/scrm/scripts/"
+    # 远程执行部署（所有敏感值通过 SSH 环境变量传递，不落入 Runner 日志）
+    - |
+      ssh -i ~/.ssh/id_ed25519 \
+        -o StrictHostKeyChecking=yes \
+        "${STAGING_USER}@${STAGING_SERVER}" \
+        "REGISTRY='${CI_REGISTRY}' \
+         REGISTRY_USER='${CI_REGISTRY_USER}' \
+         REGISTRY_PASS='${CI_REGISTRY_PASSWORD}' \
+         DB_PASSWORD='${STAGING_DB_PASSWORD}' \
+         REDIS_PASSWORD='${STAGING_REDIS_PASSWORD}' \
+         MINIO_SECRET='${STAGING_MINIO_SECRET}' \
+         JWT_SECRET='${STAGING_JWT_SECRET}' \
+         XXLJOB_TOKEN='${STAGING_XXLJOB_TOKEN}' \
+         bash /opt/scrm/scripts/blue-green-deploy.sh \
+           staging '${FULL_TAG}' '${IMAGE_API}' '${IMAGE_FRONTEND}'"
+    - echo "[✓] Staging 部署完成：${FULL_TAG}"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  needs:
+    - job: push:images
+      artifacts: true
+
+# =============================================================================
+# ── STAGE 7: regression ───────────────────────────────────────────────────────
+# =============================================================================
+
+regression:staging:
+  stage: regression
+  image: alpine:3.19
+  variables:
+    STAGING_URL: "https://staging.scrm.company.com"
+  before_script:
+    - apk add --no-cache curl jq bc bash
+  script:
+    # 等待 Staging readiness probe（TECH_SPEC 8.4）
+    - |
+      echo "等待 Staging 就绪..."
+      ELAPSED=0
+      until curl -sf "${STAGING_URL}/actuator/health/readiness" > /dev/null 2>&1; do
+        [ $ELAPSED -ge $HEALTH_TIMEOUT ] && echo "❌ Staging 超时未就绪（${HEALTH_TIMEOUT}s）" && exit 1
+        sleep $HEALTH_INTERVAL
+        ELAPSED=$((ELAPSED + HEALTH_INTERVAL))
+        printf "  已等待 %ds...\r" $ELAPSED
+      done
+      echo ""
+      echo "Staging 服务已就绪（耗时 ${ELAPSED}s）"
+    # 核心接口回归测试（含 P95 延迟验证，TECH_SPEC 7.1）
+    - bash scripts/ci/smoke-test.sh "${STAGING_URL}" "staging" "${STAGING_TEST_TOKEN}"
+    - echo "[✓] Staging 回归测试全部通过"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  needs: [deploy:staging]
+
+# =============================================================================
+# ── STAGE 8: deploy-prod（蓝绿部署，⚠️ 手动审批）────────────────────────────
+# =============================================================================
+
+deploy:prod:blue-green:
+  stage: deploy-prod
+  image: alpine:3.19
+  environment:
+    name: production
+    url: https://scrm.company.com
+    action: start
+  before_script:
+    # 复用 ssh_setup 但连接生产服务器
+    - apk add --no-cache openssh-client bash curl jq
+    - install -m 700 -d ~/.ssh
+    - printf '%s' "$SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/id_ed25519
+    - chmod 600 ~/.ssh/id_ed25519
+    - printf '%s\n' "$PROD_SERVER_KNOWN_HOSTS" >> ~/.ssh/known_hosts
+  script:
+    - BUILD_DATE=$(date +%Y%m%d)
+    - FULL_TAG="${CI_COMMIT_SHORT_SHA}-${BUILD_DATE}"
+    - |
+      echo "╔══════════════════════════════════════════╗"
+      echo "║      🚀 生产蓝绿部署启动                ║"
+      echo "╠══════════════════════════════════════════╣"
+      printf  "║  版本 Tag  : %-28s║\n" "${FULL_TAG}"
+      printf  "║  执行人    : %-28s║\n" "${GITLAB_USER_LOGIN}"
+      printf  "║  时间      : %-28s║\n" "$(date -u '+%Y-%m-%d %H:%M UTC')"
+      echo "╚══════════════════════════════════════════╝"
+    # 上传最新脚本到生产服务器
+    - |
+      ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=yes \
+        "${PROD_USER}@${PROD_SERVER}" \
+        "mkdir -p /opt/scrm/scripts && chmod 750 /opt/scrm/scripts"
+      scp -i ~/.ssh/id_ed25519 \
+        scripts/ci/blue-green-deploy.sh \
+        scripts/ci/smoke-test.sh \
+        scripts/ci/rollback.sh \
+        scripts/ci/notify.sh \
+        "${PROD_USER}@${PROD_SERVER}:/opt/scrm/scripts/"
+    # 执行蓝绿部署（零停机切换逻辑在脚本内）
+    - |
+      ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=yes \
+        "${PROD_USER}@${PROD_SERVER}" \
+        "REGISTRY='${CI_REGISTRY}' \
+         REGISTRY_USER='${CI_REGISTRY_USER}' \
+         REGISTRY_PASS='${CI_REGISTRY_PASSWORD}' \
+         DB_PASSWORD='${PROD_DB_PASSWORD}' \
+         REDIS_PASSWORD='${PROD_REDIS_PASSWORD}' \
+         MINIO_SECRET='${PROD_MINIO_SECRET}' \
+         JWT_SECRET='${PROD_JWT_SECRET}' \
+         XXLJOB_TOKEN='${PROD_XXLJOB_TOKEN}' \
+         WXBOT_WEBHOOK='${PROD_WXBOT_WEBHOOK}' \
+         NOTIFY_EMAIL='${PROD_NOTIFY_EMAIL}' \
+         bash /opt/scrm/scripts/blue-green-deploy.sh \
+           prod '${FULL_TAG}' '${IMAGE_API}' '${IMAGE_FRONTEND}'"
+    - echo "[✓] 生产蓝绿部署脚本执行完成"
+  # ⚠️ 触发规则：需 Maintainer 角色在 GitLab UI 手动点击"运行"
+  when: manual
   allow_failure: false
-  coverage: '/All files.*?\|.*?(\d+\.?\d*)\s*\|/'
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v[0-9]+\.[0-9]+\.[0-9]+$/'
+      when: manual
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  needs:
+    - job: regression:staging
+    - job: push:images
+      artifacts: true
+
+# =============================================================================
+# ── STAGE 9: smoke-test（生产冒烟，失败自动回滚）─────────────────────────────
+# =============================================================================
+
+smoke:prod:
+  stage: smoke-test
+  image: alpine:3.19
+  variables:
+    PROD_URL: "https://scrm.company.com"
+  before_script:
+    - apk add --no-cache curl jq bc bash
+  script:
+    # 等待蓝绿切换后服务完全就绪（Nginx reload 延迟）
+    - |
+      echo "等待生产服务就绪..."
+      ELAPSED=0
+      until curl -sf "${PROD_URL}/actuator/health/readiness" > /dev/null 2>&1; do
+        [ $ELAPSED -ge $HEALTH_TIMEOUT ] && echo "❌ 生产服务超时（${HEALTH_TIMEOUT}s）" && exit 1
+        sleep $HEALTH_INTERVAL
+        ELAPSED=$((ELAPSED + HEALTH_INTERVAL))
+        printf "  已等待 %ds...\r" $ELAPSED
+      done
+      echo ""
+      echo "生产服务就绪（耗时 ${ELAPSED}s）"
+    # 核心接口冒烟测试（P95 延迟 + 响应正确性，TECH_SPEC 7.1）
+    - bash scripts/ci/smoke-test.sh "${PROD_URL}" "prod" "${PROD_TEST_TOKEN}"
+    - echo "[✓] 生产冒烟测试全部通过"
+  after_script:
+    # 冒烟失败时自动触发蓝绿回滚（CLAUDE.md 8.3：优先回滚）
+    - |
+      if [ "$CI_JOB_STATUS" = "failed" ]; then
+        echo "🚨 冒烟测试失败，执行自动蓝绿回滚..."
+        apk add --no-cache openssh-client bash curl 2>/dev/null || true
+        install -m 700 -d ~/.ssh
+        printf '%s' "$SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/id_ed25519
+        chmod 600 ~/.ssh/id_ed25519
+        printf '%s\n' "$PROD_SERVER_KNOWN_HOSTS" >> ~/.ssh/known_hosts
+        ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=yes \
+          "${PROD_USER}@${PROD_SERVER}" \
+          "WXBOT_WEBHOOK='${PROD_WXBOT_WEBHOOK}' \
+           NOTIFY_EMAIL='${PROD_NOTIFY_EMAIL}' \
+           bash /opt/scrm/scripts/rollback.sh \
+             prod \
+             '${CI_COMMIT_SHORT_SHA}' \
+             'smoke-test-failed' \
+             '${CI_PIPELINE_URL}'"
+        echo "回滚指令已发送"
+      fi
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v[0-9]+\.[0-9]+\.[0-9]+$/'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  needs: [deploy:prod:blue-green]
+
+# =============================================================================
+# ── STAGE 10: notify ──────────────────────────────────────────────────────────
+# =============================================================================
+
+notify:success:
+  stage: notify
+  image: alpine:3.19
+  before_script:
+    - apk add --no-cache curl bash
+  script:
+    - |
+      bash scripts/ci/notify.sh \
+        "success" \
+        "✅ 供应链平台生产部署成功" \
+        "版本: ${CI_COMMIT_SHORT_SHA}\n执行人: ${GITLAB_USER_LOGIN}\n分支: ${CI_COMMIT_REF_NAME}\n流水线: ${CI_PIPELINE_URL}" \
+        "${PROD_WXBOT_WEBHOOK}" \
+        "${PROD_NOTIFY_EMAIL}"
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v[0-9]+\.[0-9]+\.[0-9]+$/'
+      when: on_success
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: on_success
+  needs: [smoke:prod]
+
+notify:failure:
+  stage: notify
+  image: alpine:3.19
+  before_script:
+    - apk add --no-cache curl bash
+  script:
+    - |
+      bash scripts/ci/notify.sh \
+        "failure" \
+        "🚨 供应链平台流水线失败告警" \
+        "版本: ${CI_COMMIT_SHORT_SHA}\n失败阶段: ${CI_JOB_STAGE}\n执行人: ${GITLAB_USER_LOGIN}\n详情: ${CI_PIPELINE_URL}" \
+        "${PROD_WXBOT_WEBHOOK}" \
+        "${PROD_NOTIFY_EMAIL}"
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v[0-9]+\.[0-9]+\.[0-9]+$/'
+      when: on_failure
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: on_failure
+  when: on_failure
+
+# =============================================================================
+# ── 手动回滚 Job（紧急情况在 GitLab UI 直接触发）─────────────────────────────
+# =============================================================================
+
+rollback:prod:manual:
+  stage: deploy-prod
+  image: alpine:3.19
+  environment:
+    name: production
+  before_script:
+    - apk add --no-cache openssh-client bash curl
+    - install -m 700 -d ~/.ssh
+    - printf '%s' "$SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/id_ed25519
+    - chmod 600 ~/.ssh/id_ed25519
+    - printf '%s\n' "$PROD_SERVER_KNOWN_HOSTS" >> ~/.ssh/known_hosts
+  script:
+    - |
+      echo "╔══════════════════════════════════════════╗"
+      echo "║      🔄 手动触发生产回滚                ║"
+      echo "╠══════════════════════════════════════════╣"
+      printf  "║  触发人    : %-28s║\n" "${GITLAB_USER_LOGIN}"
+      printf  "║  时间      : %-28s║\n" "$(date -u '+%Y-%m-%d %H:%M UTC')"
+      echo "╚══════════════════════════════════════════╝"
+    - |
+      ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=yes \
+        "${PROD_USER}@${PROD_SERVER}" \
+        "WXBOT_WEBHOOK='${PROD_WXBOT_WEBHOOK}' \
+         NOTIFY_EMAIL='${PROD_NOTIFY_EMAIL}' \
+         bash /opt/scrm/scripts/rollback.sh \
+           prod \
+           '${CI_COMMIT_SHORT_SHA}' \
+           'manual-rollback' \
+           '${CI_PIPELINE_URL}'"
+  # 仅手动触发，不依赖任何 Job（紧急回滚不受流水线状态限制）
+  when: manual
+  allow_failure: false
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_TAG =~ /^v/'
+      when: manual

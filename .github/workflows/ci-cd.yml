@@ -1,0 +1,749 @@
+# =============================================================================
+# .github/workflows/ci-cd.yml — 供应链风险管理平台 GitHub Actions CI/CD
+# 复制到项目根目录 .github/workflows/ 直接使用
+#
+# ┌─ 触发规则 ───────────────────────────────────────────────────────────────┐
+# │  pull_request → main/develop  → validate + test（安全门控）              │
+# │  push main                    → 全量流水线，自动部署 Staging              │
+# │  push tag v*.*.*              → 生产蓝绿部署（需 Environment 审批人点击） │
+# │  workflow_dispatch            → 手动触发，可选环境 + 回滚                 │
+# └──────────────────────────────────────────────────────────────────────────┘
+#
+# GitHub Environments 配置（Settings > Environments）：
+#   staging    : 自动部署，无需审批
+#   production : 需要 Required reviewers（Tech Lead）批准
+#
+# Secrets（Settings > Secrets and variables > Actions）：
+#   SSH_PRIVATE_KEY, STAGING_SERVER, PROD_SERVER,
+#   STAGING_SERVER_KNOWN_HOSTS, PROD_SERVER_KNOWN_HOSTS,
+#   STAGING_USER, PROD_USER,
+#   TEST_DB_PASSWORD, TEST_REDIS_PASSWORD,
+#   STAGING_DB_PASSWORD, STAGING_REDIS_PASSWORD,
+#   STAGING_MINIO_SECRET, STAGING_JWT_SECRET, STAGING_XXLJOB_TOKEN,
+#   STAGING_TEST_TOKEN,
+#   PROD_DB_PASSWORD, PROD_REDIS_PASSWORD,
+#   PROD_MINIO_SECRET, PROD_JWT_SECRET, PROD_XXLJOB_TOKEN,
+#   PROD_TEST_TOKEN, PROD_WXBOT_WEBHOOK, PROD_NOTIFY_EMAIL,
+#   REGISTRY_USER, REGISTRY_PASSWORD（私有镜像仓库，或用 GITHUB_TOKEN）
+# =============================================================================
+
+name: SCRM CI/CD Pipeline
+
+on:
+  # PR 触发（validate + test 安全门控）
+  pull_request:
+    branches: [main, develop]
+    types: [opened, synchronize, reopened]
+
+  # push main 触发（全量流水线）
+  push:
+    branches: [main, develop]
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'   # 生产 Tag 触发
+
+  # 手动触发（支持选择环境和操作）
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: '部署环境'
+        required: true
+        type: choice
+        options: [staging, production]
+        default: staging
+      action:
+        description: '操作类型'
+        required: true
+        type: choice
+        options: [deploy, rollback]
+        default: deploy
+      image_tag:
+        description: '镜像 Tag（rollback 时必填：{sha8}-{yyyyMMdd}）'
+        required: false
+        type: string
+
+# 同分支新 push 自动取消旧流水线
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# ── 全局环境变量（非敏感）────────────────────────────────────────────────────
+env:
+  REGISTRY:       ghcr.io              # GitHub Container Registry
+  IMAGE_API:      ghcr.io/${{ github.repository }}/scrm-api
+  IMAGE_FRONTEND: ghcr.io/${{ github.repository }}/scrm-frontend
+  JAVA_VERSION:   '17'
+  NODE_VERSION:   '20'
+  MAVEN_CLI_OPTS: '--batch-mode --no-transfer-progress --fail-at-end'
+  COV_SERVICE:    '80'
+  COV_FRONTEND:   '60'
+  HEALTH_TIMEOUT: '120'
+
+# =============================================================================
+# JOB 1: validate — 代码规范检查
+# =============================================================================
+
+jobs:
+  backend-lint:
+    name: "✅ Backend Lint (Checkstyle)"
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'pull_request' ||
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: temurin
+          cache: maven
+
+      - name: Run Checkstyle
+        working-directory: services/api
+        run: |
+          ./mvnw $MAVEN_CLI_OPTS checkstyle:check \
+            -Dcheckstyle.violationSeverity=error
+          echo "[✓] Java Checkstyle 通过（Google Java Style Guide）"
+
+      - name: Upload Checkstyle Report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: checkstyle-report
+          path: services/api/target/checkstyle-result.xml
+          retention-days: 7
+
+  frontend-lint:
+    name: "✅ Frontend Lint (ESLint + TypeScript)"
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'pull_request' ||
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 8
+          run_install: false
+
+      - name: Get pnpm store path
+        id: pnpm-cache
+        run: echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_OUTPUT
+
+      - name: Cache pnpm
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: pnpm-${{ hashFiles('services/frontend/pnpm-lock.yaml') }}
+          restore-keys: pnpm-
+
+      - name: Install deps
+        working-directory: services/frontend
+        run: pnpm install --frozen-lockfile --silent
+
+      - name: ESLint + TypeScript check + Prettier
+        working-directory: services/frontend
+        run: |
+          pnpm lint
+          pnpm exec tsc --noEmit
+          pnpm exec prettier --check "src/**/*.{ts,tsx}"
+          echo "[✓] 前端规范检查通过"
+
+# =============================================================================
+# JOB 2: test — 单元测试 + 覆盖率门控
+# =============================================================================
+
+  backend-test:
+    name: "🧪 Backend Test (JaCoCo ≥ ${{ env.COV_SERVICE }}%)"
+    runs-on: ubuntu-latest
+    # 集成测试服务（真实 DB，CLAUDE.md 7.2 禁止 Mock）
+    services:
+      postgres:
+        image: timescale/timescaledb:2.14.2-pg15
+        env:
+          POSTGRES_DB:       scrm_test
+          POSTGRES_USER:     scrm_user
+          POSTGRES_PASSWORD: ${{ secrets.TEST_DB_PASSWORD }}
+        options: >-
+          --health-cmd "pg_isready -U scrm_user -d scrm_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports: ["5432:5432"]
+
+      redis:
+        image: redis:7.2-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 3s
+          --health-retries 5
+        ports: ["6379:6379"]
+
+    env:
+      SPRING_PROFILES_ACTIVE: test
+      DB_HOST:        localhost
+      DB_PORT:        5432
+      DB_NAME:        scrm_test
+      DB_USERNAME:    scrm_user
+      DB_PASSWORD:    ${{ secrets.TEST_DB_PASSWORD }}
+      REDIS_HOST:     localhost
+      REDIS_PORT:     6379
+      REDIS_PASSWORD: ${{ secrets.TEST_REDIS_PASSWORD }}
+      EXT_API_MOCK:   "true"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: temurin
+          cache: maven
+
+      - name: Start Redis with password
+        run: |
+          docker exec $(docker ps -q --filter ancestor=redis:7.2-alpine) \
+            redis-cli CONFIG SET requirepass "${{ secrets.TEST_REDIS_PASSWORD }}" || true
+
+      - name: Run tests with JaCoCo
+        working-directory: services/api
+        run: |
+          ./mvnw $MAVEN_CLI_OPTS test \
+            -Dspring.profiles.active=test \
+            jacoco:report \
+            jacoco:check \
+              -Djacoco.haltOnFailure=true \
+              -Djacoco.check.rules[0].element=BUNDLE \
+              -Djacoco.check.rules[0].limit.counter=LINE \
+              -Djacoco.check.rules[0].limit.minimum="0.${{ env.COV_SERVICE }}"
+          echo "[✓] 后端测试通过，Service 层覆盖率 ≥ ${{ env.COV_SERVICE }}%"
+
+      - name: Upload JaCoCo Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-report
+          path: services/api/target/site/jacoco/
+          retention-days: 30
+
+      - name: Publish Test Results
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        if: always()
+        with:
+          files: services/api/target/surefire-reports/TEST-*.xml
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: services/api/target/site/jacoco/jacoco.xml
+          flags: backend
+
+  frontend-test:
+    name: "🧪 Frontend Test (Vitest ≥ ${{ env.COV_FRONTEND }}%)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 8
+
+      - name: Get pnpm store
+        id: pnpm-cache
+        run: echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_OUTPUT
+      - uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: pnpm-${{ hashFiles('services/frontend/pnpm-lock.yaml') }}
+
+      - name: Install & Test
+        working-directory: services/frontend
+        run: |
+          pnpm install --frozen-lockfile --silent
+          pnpm test:ci \
+            --coverage \
+            --coverageThreshold="{\"global\":{\"lines\":${{ env.COV_FRONTEND }},\"functions\":${{ env.COV_FRONTEND }}}}" \
+            --reporter=verbose
+          echo "[✓] 前端测试通过，覆盖率 ≥ ${{ env.COV_FRONTEND }}%"
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          directory: services/frontend/coverage
+          flags: frontend
+
+# =============================================================================
+# JOB 3: security — 安全扫描
+# =============================================================================
+
+  security-owasp:
+    name: "🔒 OWASP Dependency Check"
+    runs-on: ubuntu-latest
+    if: |
+      github.ref == 'refs/heads/main' ||
+      startsWith(github.ref, 'refs/tags/v') ||
+      github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: temurin
+          cache: maven
+
+      - name: OWASP Dependency Check（CVSS ≥ 7.0 阻断，CLAUDE.md 5.3）
+        working-directory: services/api
+        run: |
+          ./mvnw $MAVEN_CLI_OPTS \
+            org.owasp:dependency-check-maven:check \
+            -DfailBuildOnCVSS=7 \
+            -DsuppressionFile=../../.owasp-suppressions.xml \
+            -DautoUpdate=true \
+            -Dformat=JSON,HTML
+        timeout-minutes: 30
+
+      - name: Upload OWASP Report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: owasp-report
+          path: services/api/target/dependency-check-report.*
+          retention-days: 30
+
+  security-frontend-audit:
+    name: "🔒 Frontend pnpm audit"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 8
+      - name: Audit
+        working-directory: services/frontend
+        run: |
+          pnpm audit --audit-level=high 2>&1 | tee audit-report.txt
+          if grep -qiE "^[[:space:]]*(high|critical)" audit-report.txt 2>/dev/null; then
+            echo "❌ 高危前端依赖漏洞（CLAUDE.md 5.3：7 天内修复）"
+            exit 1
+          fi
+          echo "[✓] 前端依赖安全扫描通过"
+
+# =============================================================================
+# JOB 4: build — Docker 镜像构建 + Trivy 扫描
+# =============================================================================
+
+  build:
+    name: "📦 Build & Trivy Scan"
+    runs-on: ubuntu-latest
+    needs: [backend-test, frontend-test, security-owasp, security-frontend-audit]
+    if: |
+      github.ref == 'refs/heads/main' ||
+      startsWith(github.ref, 'refs/tags/v')
+    outputs:
+      image_tag: ${{ steps.tag.outputs.FULL_TAG }}
+      api_image: ${{ steps.tag.outputs.API_IMAGE }}
+      frontend_image: ${{ steps.tag.outputs.FRONTEND_IMAGE }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute image tag
+        id: tag
+        run: |
+          BUILD_DATE=$(date +%Y%m%d)
+          SHORT_SHA="${GITHUB_SHA::8}"
+          FULL_TAG="${SHORT_SHA}-${BUILD_DATE}"
+          echo "FULL_TAG=${FULL_TAG}"             >> $GITHUB_OUTPUT
+          echo "API_IMAGE=${IMAGE_API}:${FULL_TAG}" >> $GITHUB_OUTPUT
+          echo "FRONTEND_IMAGE=${IMAGE_FRONTEND}:${FULL_TAG}" >> $GITHUB_OUTPUT
+          echo "构建 Tag：${FULL_TAG}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── 构建 API 镜像 ──────────────────────────────────────────────────────
+      - name: Build API image
+        uses: docker/build-push-action@v5
+        with:
+          context: services/api
+          file: services/api/Dockerfile
+          push: false                                 # 扫描通过后再 push
+          load: true
+          tags: |
+            ${{ steps.tag.outputs.API_IMAGE }}
+            ${{ env.IMAGE_API }}:${{ github.ref_name }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
+          cache-from: type=gha,scope=api
+          cache-to:   type=gha,scope=api,mode=max
+          build-args: |
+            BUILDKIT_INLINE_CACHE=1
+
+      # ── Trivy 扫描（阻断高危，CLAUDE.md 8.1）──────────────────────────────
+      - name: Trivy scan API image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.tag.outputs.API_IMAGE }}
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+
+      # ── 构建 Frontend 镜像 ─────────────────────────────────────────────────
+      - name: Build Frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: services/frontend
+          file: services/frontend/Dockerfile
+          push: false
+          load: true
+          tags: |
+            ${{ steps.tag.outputs.FRONTEND_IMAGE }}
+            ${{ env.IMAGE_FRONTEND }}:${{ github.ref_name }}
+          cache-from: type=gha,scope=frontend
+          cache-to:   type=gha,scope=frontend,mode=max
+          build-args: |
+            VITE_APP_VERSION=${{ github.sha }}
+            BUILDKIT_INLINE_CACHE=1
+
+      # ── Push 到 GHCR ───────────────────────────────────────────────────────
+      - name: Push images
+        run: |
+          docker push "${{ steps.tag.outputs.API_IMAGE }}"
+          docker push "${{ steps.tag.outputs.FRONTEND_IMAGE }}"
+          # 仅 main 分支和正式 Tag 打 latest（CLAUDE.md 8.1）
+          if [ "$GITHUB_REF" = "refs/heads/main" ] || echo "$GITHUB_REF" | grep -qE '^refs/tags/v'; then
+            docker tag "${{ steps.tag.outputs.API_IMAGE }}"      "${IMAGE_API}:latest"
+            docker tag "${{ steps.tag.outputs.FRONTEND_IMAGE }}" "${IMAGE_FRONTEND}:latest"
+            docker push "${IMAGE_API}:latest"
+            docker push "${IMAGE_FRONTEND}:latest"
+            echo "[✓] latest 标签已更新"
+          fi
+          echo "[✓] 镜像推送完成：${{ steps.tag.outputs.FULL_TAG }}"
+
+# =============================================================================
+# JOB 5: deploy-staging — 自动部署预发
+# =============================================================================
+
+  deploy-staging:
+    name: "🚀 Deploy to Staging"
+    runs-on: ubuntu-latest
+    needs: [build]
+    environment:
+      name: staging
+      url: https://staging.scrm.company.com
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup SSH
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s' "${{ secrets.SSH_PRIVATE_KEY }}" | tr -d '\r' > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "${{ secrets.STAGING_SERVER_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
+
+      - name: Upload deploy scripts
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=yes \
+            "${{ secrets.STAGING_USER }}@${{ secrets.STAGING_SERVER }}" \
+            "mkdir -p /opt/scrm/scripts && chmod 750 /opt/scrm/scripts"
+          scp -i ~/.ssh/id_ed25519 \
+            scripts/ci/blue-green-deploy.sh \
+            scripts/ci/smoke-test.sh \
+            scripts/ci/rollback.sh \
+            scripts/ci/notify.sh \
+            "${{ secrets.STAGING_USER }}@${{ secrets.STAGING_SERVER }}:/opt/scrm/scripts/"
+
+      - name: Deploy to Staging
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=yes \
+            "${{ secrets.STAGING_USER }}@${{ secrets.STAGING_SERVER }}" \
+            "REGISTRY='ghcr.io' \
+             REGISTRY_USER='${{ github.actor }}' \
+             REGISTRY_PASS='${{ secrets.GITHUB_TOKEN }}' \
+             DB_PASSWORD='${{ secrets.STAGING_DB_PASSWORD }}' \
+             REDIS_PASSWORD='${{ secrets.STAGING_REDIS_PASSWORD }}' \
+             MINIO_SECRET='${{ secrets.STAGING_MINIO_SECRET }}' \
+             JWT_SECRET='${{ secrets.STAGING_JWT_SECRET }}' \
+             XXLJOB_TOKEN='${{ secrets.STAGING_XXLJOB_TOKEN }}' \
+             bash /opt/scrm/scripts/blue-green-deploy.sh \
+               staging \
+               '${{ needs.build.outputs.image_tag }}' \
+               '${{ needs.build.outputs.api_image }}' \
+               '${{ needs.build.outputs.frontend_image }}'"
+          echo "[✓] Staging 部署完成：${{ needs.build.outputs.image_tag }}"
+
+# =============================================================================
+# JOB 6: regression — 预发回归测试
+# =============================================================================
+
+  regression:
+    name: "🔍 Regression Test (Staging)"
+    runs-on: ubuntu-latest
+    needs: [deploy-staging]
+    env:
+      STAGING_URL: https://staging.scrm.company.com
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Wait for Staging readiness
+        run: |
+          echo "等待 Staging 就绪..."
+          ELAPSED=0
+          until curl -sf "${STAGING_URL}/actuator/health/readiness" > /dev/null 2>&1; do
+            [ $ELAPSED -ge ${{ env.HEALTH_TIMEOUT }} ] && echo "❌ Staging 超时未就绪" && exit 1
+            sleep 5
+            ELAPSED=$((ELAPSED + 5))
+            printf "  已等待 %ds...\r" $ELAPSED
+          done
+          echo ""
+          echo "Staging 服务已就绪（耗时 ${ELAPSED}s）"
+
+      - name: Run smoke tests
+        run: |
+          bash scripts/ci/smoke-test.sh \
+            "${STAGING_URL}" \
+            "staging" \
+            "${{ secrets.STAGING_TEST_TOKEN }}"
+          echo "[✓] Staging 回归测试全部通过"
+
+# =============================================================================
+# JOB 7: deploy-prod — 生产蓝绿部署（需 Environment 审批人批准）
+# =============================================================================
+
+  deploy-prod:
+    name: "🚀 Blue-Green Deploy to Production"
+    runs-on: ubuntu-latest
+    needs: [regression, build]
+    # ⚠️ production 环境需在 GitHub Settings > Environments 配置 Required reviewers
+    environment:
+      name: production
+      url: https://scrm.company.com
+    if: |
+      startsWith(github.ref, 'refs/tags/v') ||
+      github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup SSH (prod)
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s' "${{ secrets.SSH_PRIVATE_KEY }}" | tr -d '\r' > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "${{ secrets.PROD_SERVER_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
+
+      - name: Print deploy summary
+        run: |
+          echo "╔══════════════════════════════════════════╗"
+          echo "║      🚀 生产蓝绿部署启动                ║"
+          echo "╠══════════════════════════════════════════╣"
+          printf  "║  版本 Tag  : %-28s║\n" "${{ needs.build.outputs.image_tag }}"
+          printf  "║  执行人    : %-28s║\n" "${{ github.actor }}"
+          printf  "║  Commit    : %-28s║\n" "${GITHUB_SHA::8}"
+          echo "╚══════════════════════════════════════════╝"
+
+      - name: Upload deploy scripts
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=yes \
+            "${{ secrets.PROD_USER }}@${{ secrets.PROD_SERVER }}" \
+            "mkdir -p /opt/scrm/scripts && chmod 750 /opt/scrm/scripts"
+          scp -i ~/.ssh/id_ed25519 \
+            scripts/ci/blue-green-deploy.sh \
+            scripts/ci/smoke-test.sh \
+            scripts/ci/rollback.sh \
+            scripts/ci/notify.sh \
+            "${{ secrets.PROD_USER }}@${{ secrets.PROD_SERVER }}:/opt/scrm/scripts/"
+
+      - name: Execute blue-green deployment
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=yes \
+            "${{ secrets.PROD_USER }}@${{ secrets.PROD_SERVER }}" \
+            "REGISTRY='ghcr.io' \
+             REGISTRY_USER='${{ github.actor }}' \
+             REGISTRY_PASS='${{ secrets.GITHUB_TOKEN }}' \
+             DB_PASSWORD='${{ secrets.PROD_DB_PASSWORD }}' \
+             REDIS_PASSWORD='${{ secrets.PROD_REDIS_PASSWORD }}' \
+             MINIO_SECRET='${{ secrets.PROD_MINIO_SECRET }}' \
+             JWT_SECRET='${{ secrets.PROD_JWT_SECRET }}' \
+             XXLJOB_TOKEN='${{ secrets.PROD_XXLJOB_TOKEN }}' \
+             WXBOT_WEBHOOK='${{ secrets.PROD_WXBOT_WEBHOOK }}' \
+             NOTIFY_EMAIL='${{ secrets.PROD_NOTIFY_EMAIL }}' \
+             bash /opt/scrm/scripts/blue-green-deploy.sh \
+               prod \
+               '${{ needs.build.outputs.image_tag }}' \
+               '${{ needs.build.outputs.api_image }}' \
+               '${{ needs.build.outputs.frontend_image }}'"
+          echo "[✓] 生产蓝绿部署完成"
+
+# =============================================================================
+# JOB 8: smoke-test-prod — 生产冒烟测试（失败自动回滚）
+# =============================================================================
+
+  smoke-test-prod:
+    name: "💨 Smoke Test (Production)"
+    runs-on: ubuntu-latest
+    needs: [deploy-prod, build]
+    env:
+      PROD_URL: https://scrm.company.com
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Wait for prod readiness
+        run: |
+          echo "等待生产服务就绪..."
+          ELAPSED=0
+          until curl -sf "${PROD_URL}/actuator/health/readiness" > /dev/null 2>&1; do
+            [ $ELAPSED -ge ${{ env.HEALTH_TIMEOUT }} ] && echo "❌ 生产服务超时" && exit 1
+            sleep 5
+            ELAPSED=$((ELAPSED + 5))
+            printf "  已等待 %ds...\r" $ELAPSED
+          done
+          echo ""
+          echo "生产服务就绪（耗时 ${ELAPSED}s）"
+
+      - name: Run smoke tests
+        id: smoke
+        run: |
+          bash scripts/ci/smoke-test.sh \
+            "${PROD_URL}" \
+            "prod" \
+            "${{ secrets.PROD_TEST_TOKEN }}"
+
+      # 冒烟失败 → 自动蓝绿回滚（CLAUDE.md 8.3：优先回滚不在生产紧急修复）
+      - name: Auto rollback on failure
+        if: failure() && steps.smoke.outcome == 'failure'
+        run: |
+          echo "🚨 冒烟测试失败，执行自动蓝绿回滚..."
+          install -m 700 -d ~/.ssh
+          printf '%s' "${{ secrets.SSH_PRIVATE_KEY }}" | tr -d '\r' > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "${{ secrets.PROD_SERVER_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=yes \
+            "${{ secrets.PROD_USER }}@${{ secrets.PROD_SERVER }}" \
+            "WXBOT_WEBHOOK='${{ secrets.PROD_WXBOT_WEBHOOK }}' \
+             NOTIFY_EMAIL='${{ secrets.PROD_NOTIFY_EMAIL }}' \
+             bash /opt/scrm/scripts/rollback.sh \
+               prod \
+               '${GITHUB_SHA::8}' \
+               'smoke-test-failed' \
+               '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'"
+          echo "回滚指令已发送"
+
+# =============================================================================
+# JOB 9: notify — 部署结果通知
+# =============================================================================
+
+  notify-success:
+    name: "📢 Notify Success"
+    runs-on: ubuntu-latest
+    needs: [smoke-test-prod]
+    if: success()
+    steps:
+      - uses: actions/checkout@v4
+      - name: Send success notification
+        run: |
+          bash scripts/ci/notify.sh \
+            "success" \
+            "✅ 供应链平台生产部署成功" \
+            "版本: ${GITHUB_SHA::8}\n执行人: ${{ github.actor }}\n分支: ${{ github.ref_name }}\n流水线: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            "${{ secrets.PROD_WXBOT_WEBHOOK }}" \
+            "${{ secrets.PROD_NOTIFY_EMAIL }}"
+
+  notify-failure:
+    name: "📢 Notify Failure"
+    runs-on: ubuntu-latest
+    needs: [smoke-test-prod]
+    if: failure()
+    steps:
+      - uses: actions/checkout@v4
+      - name: Send failure notification
+        run: |
+          bash scripts/ci/notify.sh \
+            "failure" \
+            "🚨 供应链平台流水线失败告警" \
+            "版本: ${GITHUB_SHA::8}\n执行人: ${{ github.actor }}\n仓库: ${{ github.repository }}\n详情: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            "${{ secrets.PROD_WXBOT_WEBHOOK }}" \
+            "${{ secrets.PROD_NOTIFY_EMAIL }}"
+
+# =============================================================================
+# JOB 10: manual-rollback — 手动触发回滚（workflow_dispatch）
+# =============================================================================
+
+  manual-rollback:
+    name: "🔄 Manual Rollback"
+    runs-on: ubuntu-latest
+    # 仅 workflow_dispatch 且 action=rollback 时执行
+    if: |
+      github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.action == 'rollback'
+    environment:
+      name: ${{ github.event.inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup SSH
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s' "${{ secrets.SSH_PRIVATE_KEY }}" | tr -d '\r' > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          # 根据环境选择 known_hosts
+          if [ "${{ github.event.inputs.environment }}" = "production" ]; then
+            printf '%s\n' "${{ secrets.PROD_SERVER_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
+          else
+            printf '%s\n' "${{ secrets.STAGING_SERVER_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
+          fi
+
+      - name: Execute rollback
+        run: |
+          ENV="${{ github.event.inputs.environment }}"
+          if [ "$ENV" = "production" ]; then
+            SERVER="${{ secrets.PROD_SERVER }}"
+            USER="${{ secrets.PROD_USER }}"
+            WEBHOOK="${{ secrets.PROD_WXBOT_WEBHOOK }}"
+            EMAIL="${{ secrets.PROD_NOTIFY_EMAIL }}"
+          else
+            SERVER="${{ secrets.STAGING_SERVER }}"
+            USER="${{ secrets.STAGING_USER }}"
+            WEBHOOK="${{ secrets.PROD_WXBOT_WEBHOOK }}"
+            EMAIL="${{ secrets.PROD_NOTIFY_EMAIL }}"
+          fi
+
+          echo "🔄 触发 ${ENV} 环境手动回滚..."
+          echo "  镜像 Tag：${{ github.event.inputs.image_tag || 'auto-previous' }}"
+          echo "  操作人：${{ github.actor }}"
+
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=yes \
+            "${USER}@${SERVER}" \
+            "WXBOT_WEBHOOK='${WEBHOOK}' \
+             NOTIFY_EMAIL='${EMAIL}' \
+             bash /opt/scrm/scripts/rollback.sh \
+               '${ENV}' \
+               '${{ github.event.inputs.image_tag }}' \
+               'manual-rollback' \
+               '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'"

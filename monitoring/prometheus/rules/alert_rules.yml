@@ -1,0 +1,421 @@
+groups:
+
+  # ============================================================
+  # 一、API 接口性能告警
+  # TECH_SPEC 指标：P95 < 800ms、错误率 < 1%
+  # ============================================================
+  - name: scrm.api.performance
+    interval: 30s
+    rules:
+
+      # P95 响应时间超过 800ms（立即告警，持续 1min）
+      - alert: ApiP95LatencyHigh
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(http_server_requests_seconds_bucket{job="scrm-api"}[5m]))
+            by (le, uri, method)
+          ) * 1000 > 800
+        for: 1m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "API P95 响应时间超过 800ms"
+          description: |
+            接口 {{ $labels.method }} {{ $labels.uri }}
+            当前 P95 延迟: {{ printf "%.0f" $value }}ms（阈值: 800ms）
+            实例: {{ $labels.instance }}
+          runbook_url: "https://wiki.company.com/runbook/api-latency"
+
+      # P99 响应时间超过 2000ms（警告）
+      - alert: ApiP99LatencyWarning
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(http_server_requests_seconds_bucket{job="scrm-api"}[5m]))
+            by (le, uri, method)
+          ) * 1000 > 2000
+        for: 2m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "API P99 响应时间超过 2000ms"
+          description: |
+            接口 {{ $labels.method }} {{ $labels.uri }}
+            当前 P99 延迟: {{ printf "%.0f" $value }}ms（阈值: 2000ms）
+          runbook_url: "https://wiki.company.com/runbook/api-latency"
+
+      # 接口错误率超过 1%（立即告警）
+      - alert: ApiErrorRateHigh
+        expr: |
+          sum(rate(http_server_requests_seconds_count{job="scrm-api", status=~"5.."}[5m]))
+          by (uri, method)
+          /
+          sum(rate(http_server_requests_seconds_count{job="scrm-api"}[5m]))
+          by (uri, method)
+          * 100 > 1
+        for: 1m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "API 错误率超过 1%"
+          description: |
+            接口 {{ $labels.method }} {{ $labels.uri }}
+            当前错误率: {{ printf "%.2f" $value }}%（阈值: 1%）
+            实例: {{ $labels.instance }}
+          runbook_url: "https://wiki.company.com/runbook/api-error-rate"
+
+      # 整体 5xx 错误数突增（5min 内超过 50 次）
+      - alert: ApiErrorSpike
+        expr: |
+          increase(http_server_requests_seconds_count{job="scrm-api", status=~"5.."}[5m]) > 50
+        for: 0m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "API 5xx 错误突增"
+          description: |
+            过去 5 分钟 5xx 错误数: {{ printf "%.0f" $value }}
+            接口: {{ $labels.uri }}
+
+  # ============================================================
+  # 二、主机资源告警
+  # ============================================================
+  - name: scrm.host.resources
+    rules:
+
+      # CPU 使用率 > 80%（持续 5min）
+      - alert: HostCpuHigh
+        expr: |
+          100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 5m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "主机 CPU 使用率过高"
+          description: |
+            主机: {{ $labels.instance }}（{{ $labels.host }}）
+            当前 CPU 使用率: {{ printf "%.1f" $value }}%（阈值: 80%）
+          runbook_url: "https://wiki.company.com/runbook/host-cpu"
+
+      # CPU 使用率 > 95%（立即告警）
+      - alert: HostCpuCritical
+        expr: |
+          100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 95
+        for: 2m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "主机 CPU 使用率严重过高"
+          description: |
+            主机: {{ $labels.instance }}
+            当前 CPU 使用率: {{ printf "%.1f" $value }}%（阈值: 95%）
+
+      # 内存使用率 > 85%
+      - alert: HostMemoryHigh
+        expr: |
+          (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "主机内存使用率过高"
+          description: |
+            主机: {{ $labels.instance }}
+            当前内存使用率: {{ printf "%.1f" $value }}%（阈值: 85%）
+            可用内存: {{ printf "%.1f" (mul (div (query "node_memory_MemAvailable_bytes{instance=~\"$instance\"}") 1073741824) 1) }}GB
+
+      # 磁盘使用率 > 85%
+      - alert: HostDiskHigh
+        expr: |
+          100 - ((node_filesystem_avail_bytes{fstype!~"tmpfs|fuse.lxcfs"} / node_filesystem_size_bytes) * 100) > 85
+        for: 5m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "主机磁盘使用率过高"
+          description: |
+            主机: {{ $labels.instance }}
+            挂载点: {{ $labels.mountpoint }}
+            当前磁盘使用率: {{ printf "%.1f" $value }}%（阈值: 85%）
+
+      # 磁盘使用率 > 95%（立即告警）
+      - alert: HostDiskCritical
+        expr: |
+          100 - ((node_filesystem_avail_bytes{fstype!~"tmpfs|fuse.lxcfs"} / node_filesystem_size_bytes) * 100) > 95
+        for: 0m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "磁盘即将耗尽"
+          description: |
+            主机: {{ $labels.instance }}，挂载点: {{ $labels.mountpoint }}
+            当前磁盘使用率: {{ printf "%.1f" $value }}%（阈值: 95%）
+
+  # ============================================================
+  # 三、PostgreSQL 数据库告警
+  # ============================================================
+  - name: scrm.postgres
+    rules:
+
+      # 连接数超过最大连接数的 80%
+      - alert: PostgresConnectionsHigh
+        expr: |
+          pg_stat_activity_count{datname="scrm"} / pg_settings_max_connections * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+          team: dba
+        annotations:
+          summary: "PostgreSQL 连接数过高"
+          description: |
+            数据库: {{ $labels.datname }}
+            当前连接数: {{ printf "%.0f" $value }}% of max_connections
+          runbook_url: "https://wiki.company.com/runbook/postgres-connections"
+
+      # 连接数超过 95%（立即告警）
+      - alert: PostgresConnectionsCritical
+        expr: |
+          pg_stat_activity_count{datname="scrm"} / pg_settings_max_connections * 100 > 95
+        for: 1m
+        labels:
+          severity: critical
+          team: dba
+        annotations:
+          summary: "PostgreSQL 连接数即将耗尽"
+          description: |
+            数据库: {{ $labels.datname }}
+            当前连接数: {{ printf "%.0f" $value }}% of max_connections
+
+      # 慢查询数量突增（5min 内超过 10 次，单次执行 > 5s 的查询）
+      - alert: PostgresSlowQueriesHigh
+        expr: |
+          increase(pg_stat_activity_max_tx_duration{datname="scrm", state="active"}[5m]) > 5
+        for: 2m
+        labels:
+          severity: warning
+          team: dba
+        annotations:
+          summary: "PostgreSQL 存在长时间运行的查询"
+          description: |
+            数据库: {{ $labels.datname }}
+            检测到执行时间超过 5 秒的活跃查询，请检查慢查询日志
+          runbook_url: "https://wiki.company.com/runbook/postgres-slow-query"
+
+      # 数据库不可达
+      - alert: PostgresDown
+        expr: pg_up == 0
+        for: 0m
+        labels:
+          severity: critical
+          team: dba
+        annotations:
+          summary: "PostgreSQL 数据库不可达"
+          description: "实例 {{ $labels.instance }} 无法连接到 PostgreSQL"
+
+      # 主备延迟 > 60s（如有主备架构）
+      - alert: PostgresReplicationLag
+        expr: |
+          pg_replication_lag > 60
+        for: 2m
+        labels:
+          severity: warning
+          team: dba
+        annotations:
+          summary: "PostgreSQL 主备复制延迟过大"
+          description: |
+            当前复制延迟: {{ printf "%.0f" $value }}秒（阈值: 60秒）
+
+  # ============================================================
+  # 四、Redis 缓存告警
+  # TECH_SPEC 指标：命中率 < 80% 立即告警
+  # ============================================================
+  - name: scrm.redis
+    rules:
+
+      # Redis 缓存命中率低于 80%（立即告警）
+      - alert: RedisCacheHitRateLow
+        expr: |
+          redis_keyspace_hits_total / (redis_keyspace_hits_total + redis_keyspace_misses_total) * 100 < 80
+        for: 1m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "Redis 缓存命中率低于 80%"
+          description: |
+            实例: {{ $labels.instance }}
+            当前命中率: {{ printf "%.1f" $value }}%（阈值: 80%）
+            可能原因：大量缓存失效（缓存雪崩）或缓存穿透
+          runbook_url: "https://wiki.company.com/runbook/redis-hit-rate"
+
+      # Redis 连接数过高（> 1000）
+      - alert: RedisConnectionsHigh
+        expr: redis_connected_clients > 1000
+        for: 5m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "Redis 连接数过高"
+          description: |
+            实例: {{ $labels.instance }}
+            当前连接数: {{ printf "%.0f" $value }}（阈值: 1000）
+
+      # Redis 内存使用率超过 80%
+      - alert: RedisMemoryHigh
+        expr: |
+          redis_memory_used_bytes / redis_memory_max_bytes * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "Redis 内存使用率过高"
+          description: |
+            实例: {{ $labels.instance }}
+            当前内存使用率: {{ printf "%.1f" $value }}%（阈值: 80%）
+
+      # Redis 不可达
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 0m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "Redis 不可达"
+          description: "实例 {{ $labels.instance }} 无法连接到 Redis"
+
+  # ============================================================
+  # 五、Kafka 消费告警
+  # TECH_SPEC 指标：消费延迟 > 1000 条立即告警
+  # ============================================================
+  - name: scrm.kafka
+    rules:
+
+      # 消费者 Lag 超过 1000 条（立即告警）
+      - alert: KafkaConsumerLagHigh
+        expr: |
+          kafka_consumergroup_lag_sum > 1000
+        for: 1m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "Kafka 消费延迟超过 1000 条"
+          description: |
+            消费组: {{ $labels.consumergroup }}
+            Topic: {{ $labels.topic }}
+            当前 Lag: {{ printf "%.0f" $value }} 条（阈值: 1000 条）
+            可能原因：消费者处理过慢、消费者宕机
+          runbook_url: "https://wiki.company.com/runbook/kafka-consumer-lag"
+
+      # 消费者 Lag 超过 5000 条（严重）
+      - alert: KafkaConsumerLagCritical
+        expr: |
+          kafka_consumergroup_lag_sum > 5000
+        for: 0m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "Kafka 消费严重积压"
+          description: |
+            消费组: {{ $labels.consumergroup }}
+            Topic: {{ $labels.topic }}
+            当前 Lag: {{ printf "%.0f" $value }} 条（严重告警阈值: 5000 条）
+
+      # Kafka Broker 不可达
+      - alert: KafkaBrokerDown
+        expr: kafka_brokers < 1
+        for: 0m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "Kafka Broker 不可达"
+          description: "检测到 Kafka Broker 数量为 0，集群可能已完全不可用"
+
+      # Topic 分区 Leader 选举异常（isr < replicas 超过 5min）
+      - alert: KafkaUnderReplicatedPartitions
+        expr: kafka_topic_partition_under_replicated_partition > 0
+        for: 5m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "Kafka 存在副本不足的分区"
+          description: |
+            Topic: {{ $labels.topic }}
+            分区: {{ $labels.partition }}
+            副本数不足，可能影响消息可靠性
+
+  # ============================================================
+  # 六、JVM 应用健康告警
+  # ============================================================
+  - name: scrm.jvm
+    rules:
+
+      # JVM 堆内存使用率超过 85%
+      - alert: JvmHeapMemoryHigh
+        expr: |
+          jvm_memory_used_bytes{area="heap"} / jvm_memory_max_bytes{area="heap"} * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "JVM 堆内存使用率过高"
+          description: |
+            实例: {{ $labels.instance }}
+            堆内存使用率: {{ printf "%.1f" $value }}%（阈值: 85%）
+
+      # GC 停顿时间过长（每分钟 GC 时间 > 5s）
+      - alert: JvmGcPauseHigh
+        expr: |
+          increase(jvm_gc_pause_seconds_sum[1m]) > 5
+        for: 2m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "JVM GC 停顿时间过长"
+          description: |
+            实例: {{ $labels.instance }}
+            过去 1 分钟 GC 总停顿时间: {{ printf "%.2f" $value }}秒（阈值: 5秒）
+
+      # 服务实例不可达（心跳丢失）
+      - alert: ScrmApiDown
+        expr: up{job="scrm-api"} == 0
+        for: 0m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "SCRM API 服务不可达"
+          description: |
+            实例 {{ $labels.instance }} 已停止响应 Prometheus 采集
+          runbook_url: "https://wiki.company.com/runbook/service-down"
+
+      # 线程池拒绝任务（批量评分线程池）
+      - alert: ThreadPoolRejectionHigh
+        expr: |
+          increase(executor_rejected_tasks_total{job="scrm-api"}[5m]) > 10
+        for: 1m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "线程池出现任务拒绝"
+          description: |
+            实例: {{ $labels.instance }}
+            线程池: {{ $labels.name }}
+            过去 5 分钟拒绝任务数: {{ printf "%.0f" $value }}

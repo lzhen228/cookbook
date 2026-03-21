@@ -1,0 +1,194 @@
+{{/* ============================================================
+  邮件告警模板（HTML 格式）
+  含：告警摘要、问题详情、traceId、排查链接
+  ============================================================ */}}
+
+{{/* 邮件主题 */}}
+{{ define "email.subject" -}}
+  {{- if eq .Status "firing" -}}
+    [{{ .CommonLabels.severity | toUpper }}][{{ .CommonLabels.env | toUpper }}] {{ .CommonLabels.alertname }} - {{ .Alerts.Firing | len }} 条告警触发
+  {{- else -}}
+    [RESOLVED][{{ .CommonLabels.env | toUpper }}] {{ .CommonLabels.alertname }} - 告警已恢复
+  {{- end -}}
+{{- end }}
+
+{{/* 邮件 HTML 正文 */}}
+{{ define "email.html" }}
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; padding: 20px; background: #f5f5f5; color: #333; }
+  .container { max-width: 720px; margin: 0 auto; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,.1); overflow: hidden; }
+  .header { padding: 20px 28px; }
+  .header-firing { background: linear-gradient(135deg, #ff4d4f, #cf1322); color: #fff; }
+  .header-resolved { background: linear-gradient(135deg, #52c41a, #237804); color: #fff; }
+  .header h1 { margin: 0; font-size: 20px; font-weight: 600; }
+  .header p { margin: 6px 0 0; opacity: .85; font-size: 13px; }
+  .meta { display: flex; gap: 12px; flex-wrap: wrap; padding: 16px 28px; background: #fafafa; border-bottom: 1px solid #f0f0f0; }
+  .meta-item { background: #fff; border: 1px solid #e8e8e8; border-radius: 4px; padding: 6px 12px; }
+  .meta-item .label { font-size: 11px; color: #999; text-transform: uppercase; letter-spacing: .5px; }
+  .meta-item .value { font-size: 14px; font-weight: 500; margin-top: 2px; }
+  .severity-critical { color: #ff4d4f; }
+  .severity-warning { color: #fa8c16; }
+  .alert-card { margin: 16px 28px; border: 1px solid #f0f0f0; border-radius: 6px; overflow: hidden; }
+  .alert-card-header { background: #fff7e6; padding: 10px 16px; border-bottom: 1px solid #f0f0f0; font-weight: 600; font-size: 14px; }
+  .alert-card-header.critical { background: #fff1f0; }
+  .alert-card-body { padding: 14px 16px; }
+  .detail-row { display: flex; margin-bottom: 8px; font-size: 13px; }
+  .detail-label { width: 100px; color: #666; flex-shrink: 0; }
+  .detail-value { flex: 1; font-family: monospace; word-break: break-all; }
+  .traceid-box { background: #f6f8fa; border: 1px solid #e1e4e8; border-radius: 4px; padding: 8px 12px; font-family: monospace; font-size: 12px; color: #24292e; margin-top: 6px; }
+  .actions { padding: 16px 28px; display: flex; gap: 12px; flex-wrap: wrap; }
+  .btn { display: inline-block; padding: 8px 18px; border-radius: 4px; text-decoration: none; font-size: 13px; font-weight: 500; }
+  .btn-primary { background: #1677ff; color: #fff; }
+  .btn-default { background: #fff; color: #333; border: 1px solid #d9d9d9; }
+  .description-block { background: #f6f8fa; border-left: 3px solid #d9d9d9; padding: 10px 14px; border-radius: 0 4px 4px 0; font-size: 13px; white-space: pre-wrap; line-height: 1.6; margin-top: 8px; }
+  .footer { padding: 14px 28px; background: #fafafa; border-top: 1px solid #f0f0f0; font-size: 12px; color: #999; }
+  .resolved-banner { background: #f6ffed; border: 1px solid #b7eb8f; border-radius: 6px; padding: 14px 16px; margin: 16px 28px; text-align: center; }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <!-- Header -->
+  <div class="header {{ if eq .Status "firing" }}header-firing{{ else }}header-resolved{{ end }}">
+    <h1>
+      {{ if eq .Status "firing" }}🔴 生产告警触发 — {{ .CommonLabels.alertname }}
+      {{ else }}✅ 告警已恢复 — {{ .CommonLabels.alertname }}
+      {{ end }}
+    </h1>
+    <p>供应链风险管理平台（SCRM）· 监控告警系统</p>
+  </div>
+
+  <!-- Meta Info -->
+  <div class="meta">
+    <div class="meta-item">
+      <div class="label">环境</div>
+      <div class="value">{{ .CommonLabels.env | toUpper }}</div>
+    </div>
+    <div class="meta-item">
+      <div class="label">级别</div>
+      <div class="value severity-{{ .CommonLabels.severity }}">{{ .CommonLabels.severity | toUpper }}</div>
+    </div>
+    <div class="meta-item">
+      <div class="label">告警数量</div>
+      <div class="value">
+        {{ if eq .Status "firing" }}{{ .Alerts.Firing | len }} 条触发{{ else }}{{ .Alerts.Resolved | len }} 条恢复{{ end }}
+      </div>
+    </div>
+    <div class="meta-item">
+      <div class="label">时间</div>
+      <div class="value">
+        {{ if eq .Status "firing" }}
+          {{ (.Alerts.Firing | first).StartsAt.Local.Format "2006-01-02 15:04:05" }}
+        {{ else }}
+          {{ (.Alerts.Resolved | first).EndsAt.Local.Format "2006-01-02 15:04:05" }}
+        {{ end }}
+      </div>
+    </div>
+  </div>
+
+  <!-- Alerts -->
+  {{ if eq .Status "firing" }}
+  {{ range .Alerts.Firing }}
+  <div class="alert-card">
+    <div class="alert-card-header {{ if eq .Labels.severity "critical" }}critical{{ end }}">
+      告警详情：{{ .Annotations.summary }}
+    </div>
+    <div class="alert-card-body">
+
+      {{ if .Labels.instance }}
+      <div class="detail-row">
+        <span class="detail-label">实例</span>
+        <span class="detail-value">{{ .Labels.instance }}</span>
+      </div>
+      {{ end }}
+
+      {{ if .Labels.uri }}
+      <div class="detail-row">
+        <span class="detail-label">接口</span>
+        <span class="detail-value">{{ .Labels.method }} {{ .Labels.uri }}</span>
+      </div>
+      {{ end }}
+
+      {{ if .Labels.consumergroup }}
+      <div class="detail-row">
+        <span class="detail-label">Kafka 消费组</span>
+        <span class="detail-value">{{ .Labels.consumergroup }}</span>
+      </div>
+      <div class="detail-row">
+        <span class="detail-label">Topic</span>
+        <span class="detail-value">{{ .Labels.topic }}</span>
+      </div>
+      {{ end }}
+
+      {{ if .Labels.host }}
+      <div class="detail-row">
+        <span class="detail-label">主机</span>
+        <span class="detail-value">{{ .Labels.host }}</span>
+      </div>
+      {{ end }}
+
+      <div class="detail-row">
+        <span class="detail-label">触发时间</span>
+        <span class="detail-value">{{ .StartsAt.Local.Format "2006-01-02 15:04:05" }}</span>
+      </div>
+
+      <div class="detail-row" style="margin-top:12px;">
+        <span class="detail-label">问题描述</span>
+      </div>
+      <div class="description-block">{{ .Annotations.description }}</div>
+
+      <!-- TraceId 提示（API 错误类告警） -->
+      {{ if or (contains "Api" .Labels.alertname) (eq .Labels.alertname "ScrmApiDown") }}
+      <div class="detail-row" style="margin-top:12px;">
+        <span class="detail-label">排查 TraceId</span>
+      </div>
+      <div class="traceid-box">
+        通过 Kibana 检索告警时间窗口内的 traceId：<br>
+        <strong>查询语句：</strong> service:scrm-api AND level:ERROR AND @timestamp:[{{ .StartsAt.Add (mul -5 60000000000) | .StartsAt.Local.Format "2006-01-02T15:04:05" }} TO {{ .StartsAt.Local.Format "2006-01-02T15:04:05" }}]<br>
+        <a href="http://kibana.company.com/app/discover#/?_g=(time:(from:'{{ .StartsAt.Add (mul -5 60000000000) | .StartsAt.Local.Format "2006-01-02T15:04:05" }}',to:'{{ .StartsAt.Local.Format "2006-01-02T15:04:05" }}'))">
+          → 点击跳转 Kibana（需 VPN）
+        </a>
+      </div>
+      {{ end }}
+
+    </div>
+  </div>
+  {{ end }}
+
+  <!-- Actions -->
+  <div class="actions">
+    <a class="btn btn-primary" href="http://grafana.company.com/d/scrm-overview?orgId=1">📊 Grafana 监控大盘</a>
+    {{ if (.Alerts.Firing | first).Annotations.runbook_url }}
+    <a class="btn btn-default" href="{{ (.Alerts.Firing | first).Annotations.runbook_url }}">📖 排查手册</a>
+    {{ end }}
+    <a class="btn btn-default" href="http://alertmanager.company.com/#/alerts">🔔 Alertmanager</a>
+    <a class="btn btn-default" href="http://kibana.company.com">🔍 日志检索</a>
+  </div>
+
+  {{ else }}
+  <!-- Resolved -->
+  <div class="resolved-banner">
+    <div style="font-size:28px; margin-bottom:8px;">✅</div>
+    <div style="font-size:16px; font-weight:600; color:#52c41a; margin-bottom:4px;">告警已恢复</div>
+    <div style="font-size:13px; color:#666;">
+      恢复时间：{{ (.Alerts.Resolved | first).EndsAt.Local.Format "2006-01-02 15:04:05" }}<br>
+      触发时间：{{ (.Alerts.Resolved | first).StartsAt.Local.Format "2006-01-02 15:04:05" }}
+    </div>
+  </div>
+  {{ end }}
+
+  <!-- Footer -->
+  <div class="footer">
+    此邮件由 SCRM 监控告警系统自动发送，请勿直接回复。
+    如需修改告警规则，请联系 SRE 团队。<br>
+    告警策略文档：<a href="https://wiki.company.com/monitoring">wiki.company.com/monitoring</a>
+  </div>
+
+</div>
+</body>
+</html>
+{{ end }}

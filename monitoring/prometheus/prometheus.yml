@@ -1,0 +1,83 @@
+global:
+  scrape_interval: 15s         # 默认采集间隔
+  evaluation_interval: 15s     # 告警规则评估间隔
+  scrape_timeout: 10s
+
+  # 全局外部标签（用于告警路由区分环境）
+  external_labels:
+    env: "prod"
+    cluster: "scrm-prod"
+    region: "cn-south"
+
+# 告警规则文件
+rule_files:
+  - "/etc/prometheus/rules/*.yml"
+
+# Alertmanager 集成
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - "alertmanager:9093"
+      timeout: 10s
+      api_version: v2
+
+# ============================================================
+# 采集目标
+# ============================================================
+scrape_configs:
+
+  # ---------- Prometheus 自身 ----------
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # ---------- Spring Boot API (Micrometer + Actuator) ----------
+  - job_name: "scrm-api"
+    metrics_path: "/actuator/prometheus"
+    scrape_interval: 10s
+    static_configs:
+      - targets:
+          - "scrm-api:8080"
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: "scrm-api"
+
+  # ---------- Node Exporter（主机 CPU / 内存 / 磁盘 / 网络） ----------
+  - job_name: "node-exporter"
+    static_configs:
+      - targets:
+          - "node-exporter:9100"
+        labels:
+          host: "scrm-prod-01"
+
+  # ---------- PostgreSQL Exporter ----------
+  - job_name: "postgres-exporter"
+    static_configs:
+      - targets:
+          - "postgres-exporter:9187"
+        labels:
+          db: "scrm"
+
+  # ---------- Redis Exporter ----------
+  - job_name: "redis-exporter"
+    static_configs:
+      - targets:
+          - "redis-exporter:9121"
+        labels:
+          instance: "scrm-redis"
+
+  # ---------- Kafka Exporter（JMX via kafka-exporter） ----------
+  - job_name: "kafka-exporter"
+    static_configs:
+      - targets:
+          - "kafka-exporter:9308"
+        labels:
+          cluster: "scrm-kafka"
+
+  # ---------- Alertmanager 自身 ----------
+  - job_name: "alertmanager"
+    static_configs:
+      - targets:
+          - "alertmanager:9093"
