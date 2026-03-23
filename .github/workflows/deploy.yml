@@ -1,0 +1,90 @@
+# =============================================================================
+# .github/workflows/deploy.yml — 单机生产部署
+#
+# 触发：push to main → rsync 代码到服务器 → docker compose up --build
+#
+# 所需 GitHub Secrets（Settings > Secrets and variables > Actions）：
+#   PROD_SSH_PRIVATE_KEY      : GitHub Actions 用的 SSH 私钥（ed25519）
+#   PROD_SERVER               : 服务器 IP，例如 47.94.120.15
+#   PROD_USER                 : 登录用户名，例如 root
+#   PROD_SERVER_KNOWN_HOSTS   : ssh-keyscan 输出的主机指纹行
+# =============================================================================
+
+name: Deploy to Production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: '手动部署原因'
+        required: false
+        default: '手动触发'
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false   # 不取消正在进行的部署，排队等待
+
+jobs:
+  deploy:
+    name: "🚀 Deploy to Production"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s' "${{ secrets.PROD_SSH_PRIVATE_KEY }}" | tr -d '\r' > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "${{ secrets.PROD_SERVER_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
+          echo "[✓] SSH 配置完成"
+
+      - name: Sync code to server
+        run: |
+          rsync -avz --delete \
+            --exclude='.git' \
+            --exclude='node_modules' \
+            --exclude='services/frontend/node_modules' \
+            --exclude='services/frontend/dist' \
+            --exclude='services/api/target' \
+            --exclude='logs' \
+            --exclude='.env.prod' \
+            --exclude='.env.local' \
+            -e "ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=yes" \
+            ./ \
+            "${{ secrets.PROD_USER }}@${{ secrets.PROD_SERVER }}:/opt/cookbook/"
+          echo "[✓] 代码同步完成 (commit: ${GITHUB_SHA::8})"
+
+      - name: Deploy on server
+        run: |
+          ssh -i ~/.ssh/id_ed25519 \
+            -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=30 \
+            "${{ secrets.PROD_USER }}@${{ secrets.PROD_SERVER }}" \
+            bash -s << 'REMOTE'
+          set -euo pipefail
+          cd /opt/cookbook
+
+          echo "=== [1/2] 启动服务 ==="
+          bash scripts/deploy-single-host.sh
+
+          echo "=== [2/2] 验证容器状态 ==="
+          sleep 10
+          docker compose --env-file .env.prod -f docker-compose.prod.yml ps
+          echo "✅ 部署完成"
+          REMOTE
+
+      - name: Print summary
+        if: always()
+        run: |
+          echo "### 部署结果" >> $GITHUB_STEP_SUMMARY
+          echo "| 字段 | 值 |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-----|" >> $GITHUB_STEP_SUMMARY
+          echo "| 服务器 | ${{ secrets.PROD_SERVER }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Commit | ${GITHUB_SHA::8} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 执行人 | ${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 触发方式 | ${{ github.event_name }} |" >> $GITHUB_STEP_SUMMARY
