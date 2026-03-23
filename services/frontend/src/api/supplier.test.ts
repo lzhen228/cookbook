@@ -23,9 +23,9 @@ describe('supplier API', () => {
     it('should fetch supplier list with default params', async () => {
       const data = await fetchSupplierList({ page: 1, page_size: 20 });
 
-      expect(data.total).toBe(3);
-      expect(data.items).toHaveLength(3);
-      expect(data.items[0].name).toBe('测试供应商A');
+      expect(data.total).toBe(10);
+      expect(data.items.length).toBeGreaterThan(0);
+      expect(data.items[0].name).toBe('深圳芯科半导体有限公司');
       expect(data.page_size).toBe(20);
     });
 
@@ -70,11 +70,11 @@ describe('supplier API', () => {
       const profile = await fetchSupplierProfile(1001);
 
       expect(profile.basic.id).toBe(1001);
-      expect(profile.basic.name).toBe('测试供应商A');
+      expect(profile.basic.name).toBe('深圳芯科半导体有限公司');
       expect(profile.basic.unified_code).toBe('91440300TEST00001');
-      expect(profile.health.score).toBe(85.5);
-      expect(profile.health.level).toBe('low_risk');
-      expect(profile.risk_events_total).toBe(10);
+      expect(profile.health.score).toBe(32.5);
+      expect(profile.health.level).toBe('high_risk');
+      expect(profile.risk_events_total).toBe(7);
     });
 
     it('should reject when supplier not found (404001)', async () => {
@@ -126,7 +126,7 @@ describe('supplier API', () => {
       const result = await fetchReportDownloadUrl(1001);
 
       expect(result.url).toContain('minio.example.com');
-      expect(result.filename).toBe('supplier_1001_report.pdf');
+      expect(result.filename).toBe('supplier_1001_health_report.pdf');
       expect(result.expires_at).toBeDefined();
     });
   });

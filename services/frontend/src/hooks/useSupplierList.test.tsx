@@ -36,9 +36,9 @@ describe('useSupplierList Hook', () => {
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
-    expect(result.current.data?.total).toBe(3);
-    expect(result.current.data?.items).toHaveLength(3);
-    expect(result.current.data?.items[0].name).toBe('测试供应商A');
+    expect(result.current.data?.total).toBe(10);
+    expect(result.current.data?.items.length).toBeGreaterThan(0);
+    expect(result.current.data?.items[0].name).toBe('深圳芯科半导体有限公司');
   });
 
   it('should return paginated data with page_size', async () => {

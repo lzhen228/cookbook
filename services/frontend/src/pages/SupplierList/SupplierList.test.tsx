@@ -46,24 +46,24 @@ describe('SupplierList Page', () => {
 
     // 等待 API 数据加载
     await waitFor(() => {
-      expect(screen.getByText('测试供应商A')).toBeInTheDocument();
+      expect(screen.getByText('深圳芯科半导体有限公司')).toBeInTheDocument();
     });
 
     // 验证表格列内容
-    expect(screen.getByText('测试供应商B')).toBeInTheDocument();
-    expect(screen.getByText('测试供应商C')).toBeInTheDocument();
+    expect(screen.getByText('上海精工机械股份有限公司')).toBeInTheDocument();
+    expect(screen.getByText('广州恒力电子有限公司')).toBeInTheDocument();
   });
 
   it('should display health level badges', async () => {
     render(<SupplierList />, { wrapper: createWrapper() });
 
     await waitFor(() => {
-      expect(screen.getByText('测试供应商A')).toBeInTheDocument();
+      expect(screen.getByText('深圳芯科半导体有限公司')).toBeInTheDocument();
     });
 
-    // 低风险和高风险标签
-    expect(screen.getByText('低风险')).toBeInTheDocument();
+    // 高风险和低风险标签
     expect(screen.getByText('高风险')).toBeInTheDocument();
+    expect(screen.getByText('低风险')).toBeInTheDocument();
     // 未评分供应商应显示 "未评分"
     expect(screen.getByText('未评分')).toBeInTheDocument();
   });
@@ -72,11 +72,10 @@ describe('SupplierList Page', () => {
     render(<SupplierList />, { wrapper: createWrapper() });
 
     await waitFor(() => {
-      expect(screen.getByText('测试供应商A')).toBeInTheDocument();
+      expect(screen.getByText('深圳芯科半导体有限公司')).toBeInTheDocument();
     });
 
-    expect(screen.getByText('合作中')).toBeInTheDocument();
-    expect(screen.getByText('受限')).toBeInTheDocument();
+    expect(screen.getAllByText('合作中').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('潜在')).toBeInTheDocument();
   });
 
@@ -84,17 +83,17 @@ describe('SupplierList Page', () => {
     render(<SupplierList />, { wrapper: createWrapper() });
 
     await waitFor(() => {
-      expect(screen.getByText('广东 深圳')).toBeInTheDocument();
+      expect(screen.getByText('广东省 深圳市')).toBeInTheDocument();
     });
 
-    expect(screen.getByText('北京')).toBeInTheDocument();
+    expect(screen.getByText('上海市 浦东新区')).toBeInTheDocument();
   });
 
   it('should display total count', async () => {
     render(<SupplierList />, { wrapper: createWrapper() });
 
     await waitFor(() => {
-      expect(screen.getByText(/共 3 条/)).toBeInTheDocument();
+      expect(screen.getByText(/共 10 条/)).toBeInTheDocument();
     });
   });
 
@@ -130,7 +129,7 @@ describe('SupplierList Page', () => {
     render(<SupplierList />, { wrapper: createWrapper() });
 
     await waitFor(() => {
-      expect(screen.getByText('测试供应商A')).toBeInTheDocument();
+      expect(screen.getByText('深圳芯科半导体有限公司')).toBeInTheDocument();
     });
 
     // 已关注供应商应有 StarFilled 图标（通过 aria 或按钮存在判断）

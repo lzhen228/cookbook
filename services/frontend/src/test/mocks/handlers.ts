@@ -6,7 +6,11 @@ import { http, HttpResponse } from 'msw';
 import {
   mockSupplierListResponse,
   mockSupplierProfile,
-  mockTabData,
+  mockUnscoredProfile,
+  mockTabDataMap,
+  mockDashboardData,
+  mockRiskAlerts,
+  mockRiskAlertListResponse,
 } from './data';
 
 const BASE_URL = '/api/v1';
@@ -33,6 +37,15 @@ export const handlers = [
         traceId: 'test-trace-404',
       });
     }
+    // 未评分供应商
+    if (id === 1006) {
+      return HttpResponse.json({
+        code: 0,
+        msg: 'ok',
+        data: mockUnscoredProfile,
+        traceId: 'test-trace-002b',
+      });
+    }
     return HttpResponse.json({
       code: 0,
       msg: 'ok',
@@ -53,10 +66,11 @@ export const handlers = [
         traceId: 'test-trace-400',
       });
     }
+    const tabData = mockTabDataMap[tabName];
     return HttpResponse.json({
       code: 0,
       msg: 'ok',
-      data: { ...mockTabData, tab: tabName },
+      data: tabData,
       traceId: 'test-trace-003',
     });
   }),
@@ -78,10 +92,59 @@ export const handlers = [
       msg: 'ok',
       data: {
         url: 'https://minio.example.com/reports/test.pdf?signed=1',
-        expires_at: '2026-03-20T11:00:00+08:00',
-        filename: 'supplier_1001_report.pdf',
+        expires_at: '2026-03-23T18:00:00+08:00',
+        filename: 'supplier_1001_health_report.pdf',
       },
       traceId: 'test-trace-005',
+    });
+  }),
+
+  // GET /dashboard — 风险看板
+  http.get(`${BASE_URL}/dashboard`, () => {
+    return HttpResponse.json({
+      code: 0,
+      msg: 'ok',
+      data: mockDashboardData,
+      traceId: 'test-trace-dashboard',
+    });
+  }),
+
+  // GET /risk-events — 预警事项列表
+  http.get(`${BASE_URL}/risk-events`, ({ request }) => {
+    const url = new URL(request.url);
+    const status = url.searchParams.get('status');
+    const dimension = url.searchParams.get('risk_dimension');
+    const keyword = url.searchParams.get('keyword');
+
+    let items = [...mockRiskAlerts];
+    if (status) items = items.filter((a) => a.status === status);
+    if (dimension) items = items.filter((a) => a.risk_dimension === dimension);
+    if (keyword) items = items.filter((a) => a.supplier_name.includes(keyword));
+
+    const stats = {
+      total: mockRiskAlerts.length,
+      open: mockRiskAlerts.filter((a) => a.status === 'open').length,
+      confirmed: mockRiskAlerts.filter((a) => a.status === 'confirmed').length,
+      processing: mockRiskAlerts.filter((a) => a.status === 'processing').length,
+      closed: mockRiskAlerts.filter((a) => a.status === 'closed').length,
+      dismissed: mockRiskAlerts.filter((a) => a.status === 'dismissed').length,
+    };
+
+    return HttpResponse.json({
+      code: 0,
+      msg: 'ok',
+      data: { ...mockRiskAlertListResponse, stats, items, total: items.length },
+      traceId: 'test-trace-risk-events',
+    });
+  }),
+
+  // PATCH /risk-events/:id/status — 更新预警状态
+  http.patch(`${BASE_URL}/risk-events/:id/status`, () => {
+    return HttpResponse.json({
+      code: 0,
+      msg: 'ok',
+      data: null,
+      traceId: 'test-trace-risk-events-update',
     });
   }),
 

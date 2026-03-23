@@ -1,5 +1,10 @@
-import { useQuery } from '@tanstack/react-query';
-import { fetchSupplierProfile, fetchSupplierTab, fetchReportDownloadUrl } from '@/api/supplier';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import {
+  fetchSupplierProfile,
+  fetchSupplierTab,
+  fetchReportDownloadUrl,
+  toggleSupplierFollow,
+} from '@/api/supplier';
 import type { TabName } from '@/types/supplier.types';
 
 /** 供应商画像主接口 Hook（首屏核心数据） */
@@ -28,5 +33,17 @@ export function useReportDownloadUrl(supplierId: number, enabled: boolean) {
     queryFn: () => fetchReportDownloadUrl(supplierId),
     enabled: enabled && supplierId > 0,
     staleTime: 10 * 60 * 1000,
+  });
+}
+
+/** 供应商画像页关注/取关 Hook（成功后刷新画像缓存） */
+export function useProfileFollow(supplierId: number) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (isFollowed: boolean) => toggleSupplierFollow(supplierId, isFollowed),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['supplierProfile', supplierId] });
+    },
   });
 }
