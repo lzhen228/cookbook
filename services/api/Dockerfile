@@ -1,16 +1,19 @@
 FROM alpine:3.20 AS builder
 
-RUN apk add --no-cache openjdk17 maven
+RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories && \
+    apk add --no-cache openjdk17 maven
 
 WORKDIR /build
 COPY pom.xml .
+COPY maven-settings.xml .
 COPY src ./src
 
-RUN mvn clean package -DskipTests -q
+RUN mvn clean package -DskipTests -q -s maven-settings.xml
 
 FROM alpine:3.20
 
-RUN apk add --no-cache openjdk17-jre-headless wget
+RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories && \
+    apk add --no-cache openjdk17-jre-headless wget
 
 RUN addgroup -S app && adduser -S app -G app
 
