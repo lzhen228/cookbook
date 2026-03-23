@@ -1,13 +1,16 @@
-FROM eclipse-temurin:17.0.9-jdk-alpine AS builder
+FROM alpine:3.20 AS builder
+
+RUN apk add --no-cache openjdk17 maven
 
 WORKDIR /build
 COPY pom.xml .
 COPY src ./src
 
-RUN apk add --no-cache maven \
-    && mvn clean package -DskipTests -q
+RUN mvn clean package -DskipTests -q
 
-FROM eclipse-temurin:17.0.9-jre-alpine
+FROM alpine:3.20
+
+RUN apk add --no-cache openjdk17-jre-headless wget
 
 RUN addgroup -S app && adduser -S app -G app
 
