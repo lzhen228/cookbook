@@ -52,6 +52,15 @@ jobs:
             "which rsync || dnf install -y rsync"
           echo "[✓] rsync 已就绪"
 
+      - name: Ensure deploy directory on server
+        run: |
+          ssh -i ~/.ssh/id_ed25519 \
+            -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=30 \
+            "${{ secrets.PROD_USER }}@${{ secrets.PROD_SERVER }}" \
+            "mkdir -p /opt/cookbook"
+          echo "[✓] 目录已就绪"
+
       - name: Sync code to server
         run: |
           rsync -avz --delete \
