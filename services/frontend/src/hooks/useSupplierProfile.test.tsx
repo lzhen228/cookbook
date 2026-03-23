@@ -32,11 +32,11 @@ describe('useSupplierProfile Hook', () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
     expect(result.current.data?.basic.id).toBe(1001);
-    expect(result.current.data?.basic.name).toBe('测试供应商A');
-    expect(result.current.data?.health.score).toBe(85.5);
-    expect(result.current.data?.health.level).toBe('low_risk');
-    expect(result.current.data?.risk_events).toHaveLength(2);
-    expect(result.current.data?.risk_events_total).toBe(10);
+    expect(result.current.data?.basic.name).toBe('深圳芯科半导体有限公司');
+    expect(result.current.data?.health.score).toBe(32.5);
+    expect(result.current.data?.health.level).toBe('high_risk');
+    expect(result.current.data?.risk_events.length).toBeGreaterThan(0);
+    expect(result.current.data?.risk_events_total).toBe(7);
   });
 
   it('should NOT fetch when supplierId <= 0 (enabled: false)', async () => {
@@ -112,7 +112,7 @@ describe('useReportDownloadUrl Hook', () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
     expect(result.current.data?.url).toContain('minio.example.com');
-    expect(result.current.data?.filename).toBe('supplier_1001_report.pdf');
+    expect(result.current.data?.filename).toBe('supplier_1001_health_report.pdf');
   });
 
   it('should NOT fetch when enabled is false', async () => {

@@ -108,3 +108,86 @@ export type RiskEventStatus = 'open' | 'confirmed' | 'processing' | 'closed' | '
 
 /** Tab 标识枚举 */
 export type TabName = 'basic-info' | 'business-info' | 'judicial' | 'credit' | 'tax';
+
+/** 基本信息 Tab 内容 */
+export interface BasicInfoContent {
+  legal_rep?: string;
+  reg_capital?: string;
+  establishment_date?: string;
+  registered_address?: string;
+  employees_count?: number;
+  contact_phone?: string;
+}
+
+/** 经营信息 Tab 内容 */
+export interface BusinessInfoContent {
+  main_business?: string;
+  annual_revenue?: string;
+  shareholders?: Array<{
+    name: string;
+    share_ratio: string;
+    contribution?: string;
+  }>;
+  branches?: Array<{
+    name: string;
+    address: string;
+    status: string;
+  }>;
+}
+
+/** 司法诉讼 Tab 内容 */
+export interface JudicialContent {
+  dishonest_count?: number;
+  execution_count?: number;
+  executions?: Array<{
+    case_no: string;
+    court: string;
+    amount: string;
+    status: string;
+    date: string;
+  }>;
+  litigations?: Array<{
+    title: string;
+    court: string;
+    role: string;
+    amount?: string;
+    status: string;
+    date: string;
+  }>;
+}
+
+/** 信用数据 Tab 内容 */
+export interface CreditContent {
+  credit_score?: number;
+  rating?: string;
+  rating_agency?: string;
+  rating_date?: string;
+  rating_outlook?: string;
+  rating_history?: Array<{
+    rating: string;
+    agency: string;
+    date: string;
+    change: 'upgrade' | 'downgrade' | 'maintain';
+  }>;
+}
+
+/** 税务信息 Tab 内容 */
+export interface TaxContent {
+  tax_payer_type?: string;
+  tax_credit_level?: string;
+  tax_credit_date?: string;
+  owed_tax?: string;
+  penalties?: Array<{
+    type: string;
+    amount: string;
+    date: string;
+    status: string;
+    reason?: string;
+  }>;
+  abnormal_records?: Array<{
+    type: string;
+    date: string;
+    reason: string;
+    status: string;
+  }>;
+}

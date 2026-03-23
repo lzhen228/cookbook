@@ -22,6 +22,9 @@ export default defineConfig({
     globals: true,
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],
+    alias: {
+      'echarts-for-react': path.resolve(__dirname, './src/test/__mocks__/echarts-for-react.tsx'),
+    },
     css: true,
     coverage: {
       provider: 'v8',

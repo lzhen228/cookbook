@@ -6,6 +6,13 @@ import { ConfigProvider } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import App from './App';
 
+async function prepare() {
+  if (import.meta.env.DEV) {
+    const { worker } = await import('./test/mocks/browser');
+    return worker.start({ onUnhandledRequest: 'bypass' });
+  }
+}
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -15,14 +22,16 @@ const queryClient = new QueryClient({
   },
 });
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <BrowserRouter>
-      <QueryClientProvider client={queryClient}>
-        <ConfigProvider locale={zhCN}>
-          <App />
-        </ConfigProvider>
-      </QueryClientProvider>
-    </BrowserRouter>
-  </React.StrictMode>,
-);
+prepare().then(() => {
+  ReactDOM.createRoot(document.getElementById('root')!).render(
+    <React.StrictMode>
+      <BrowserRouter>
+        <QueryClientProvider client={queryClient}>
+          <ConfigProvider locale={zhCN}>
+            <App />
+          </ConfigProvider>
+        </QueryClientProvider>
+      </BrowserRouter>
+    </React.StrictMode>,
+  );
+});
