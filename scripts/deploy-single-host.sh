@@ -27,6 +27,9 @@ fi
 
 cd "${ROOT_DIR}"
 
+# 停止旧容器（保留 volume 数据），避免端口冲突
+docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" down --remove-orphans || true
+
 docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" up -d --build
 
 docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" ps

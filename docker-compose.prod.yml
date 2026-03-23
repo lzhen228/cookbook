@@ -9,8 +9,7 @@ services:
       POSTGRES_DB: ${DB_NAME}
       POSTGRES_USER: ${DB_USERNAME}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
-    ports:
-      - "5432:5432"
+    # 生产环境不对外暴露端口，仅供 Docker 内网访问
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -24,8 +23,7 @@ services:
     container_name: scrm-redis
     restart: unless-stopped
     command: redis-server --requirepass ${REDIS_PASSWORD}
-    ports:
-      - "6379:6379"
+    # 生产环境不对外暴露端口，仅供 Docker 内网访问
     volumes:
       - redis_data:/data
     healthcheck:
@@ -42,9 +40,7 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
-    ports:
-      - "9000:9000"
-      - "9001:9001"
+    # 生产环境不对外暴露端口，仅供 Docker 内网访问
     volumes:
       - minio_data:/data
 
