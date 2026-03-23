@@ -1,0 +1,9 @@
+.git
+node_modules
+services/frontend/node_modules
+services/frontend/dist
+services/api/target
+logs
+.env.local
+.env.prod
+.claude
