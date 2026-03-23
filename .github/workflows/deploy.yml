@@ -43,6 +43,15 @@ jobs:
           printf '%s\n' "${{ secrets.PROD_SERVER_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
           echo "[✓] SSH 配置完成"
 
+      - name: Ensure rsync on server
+        run: |
+          ssh -i ~/.ssh/id_ed25519 \
+            -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=30 \
+            "${{ secrets.PROD_USER }}@${{ secrets.PROD_SERVER }}" \
+            "which rsync || dnf install -y rsync"
+          echo "[✓] rsync 已就绪"
+
       - name: Sync code to server
         run: |
           rsync -avz --delete \
