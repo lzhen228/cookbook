@@ -1,7 +1,7 @@
 FROM node:20-alpine AS builder
 
 RUN npm config set registry https://registry.npmmirror.com && \
-    npm install -g pnpm@8 && \
+    npm install -g pnpm@9 && \
     pnpm config set registry https://registry.npmmirror.com
 
 WORKDIR /app
