@@ -247,11 +247,11 @@ public class DashboardServiceImpl implements DashboardService {
    * 将时间戳对象转换为 ISO-8601 字符串，兼容 Timestamp / OffsetDateTime / String。
    *
    * @param value 原始时间戳值
-   * @return ISO-8601 时间字符串，null 时返回空字符串
+   * @return ISO-8601 时间字符串，null 时返回 null（由 Jackson NON_NULL 策略省略该字段）
    */
   private String toTimestampString(Object value) {
     if (value == null) {
-      return "";
+      return null;
     }
     if (value instanceof Timestamp ts) {
       return ts.toInstant().atZone(ZoneId.systemDefault()).toOffsetDateTime().toString();

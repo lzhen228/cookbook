@@ -170,8 +170,8 @@ export function Dashboard() {
       title: '周变化',
       dataIndex: 'week_trend',
       width: 80,
-      render: (trend: number | null) => {
-        if (trend === null || trend === 0) return <Text type="secondary"><MinusOutlined /> -</Text>;
+      render: (trend: number | null | undefined) => {
+        if (trend == null || trend === 0) return <Text type="secondary"><MinusOutlined /> -</Text>;
         const up = trend > 0;
         return (
           <Text style={{ color: up ? '#52c41a' : '#f5222d' }}>
@@ -356,7 +356,7 @@ export function Dashboard() {
                           {event.description}
                         </Text>
                         <Text type="secondary" style={{ fontSize: 11, whiteSpace: 'nowrap', marginLeft: 8 }}>
-                          {dayjs(event.triggered_at).format('MM-DD')}
+                          {event.triggered_at ? dayjs(event.triggered_at).format('MM-DD') : '-'}
                         </Text>
                       </Flex>
                     </Flex>
