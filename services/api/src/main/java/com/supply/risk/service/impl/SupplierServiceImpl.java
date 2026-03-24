@@ -171,7 +171,9 @@ public class SupplierServiceImpl implements SupplierService {
         // 写入 Redis 缓存，TTL 24h ± 30min 随机抖动
         long jitterMinutes = (long) (Math.random() * 60) - 30;
         long ttlMinutes = TAB_CACHE_TTL_HOURS * 60 + jitterMinutes;
-        Map<String, Object> cacheValue = Map.of("dataSource", dataSource, "content", content != null ? content : Map.of());
+        Map<String, Object> cacheValue = new HashMap<>();
+        cacheValue.put("dataSource", dataSource);
+        cacheValue.put("content", content != null ? content : new HashMap<>());
         redisTemplate.opsForValue().set(cacheKey, cacheValue, ttlMinutes, TimeUnit.MINUTES);
 
         return new SupplierTabResponse(
@@ -333,12 +335,13 @@ public class SupplierServiceImpl implements SupplierService {
 
     private Object extractTabContent(Supplier supplier, String tabName) {
         if (supplier.getExtData() == null) {
-            return Map.of();
+            return new HashMap<>();
         }
         if (supplier.getExtData() instanceof Map<?, ?> extMap) {
-            return extMap.get(tabName);
+            Object tabContent = extMap.get(tabName);
+            return tabContent != null ? tabContent : new HashMap<>();
         }
-        return Map.of();
+        return new HashMap<>();
     }
 
     private String resolveDataSource(String tabName) {
