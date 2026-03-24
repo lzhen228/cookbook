@@ -150,8 +150,15 @@ public class SupplierServiceImpl implements SupplierService {
         }
 
         String cacheKey = TAB_CACHE_KEY_PREFIX + supplierId + ":" + tabName;
-        @SuppressWarnings("unchecked")
-        Map<String, Object> cached = (Map<String, Object>) redisTemplate.opsForValue().get(cacheKey);
+        Map<String, Object> cached = null;
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> raw = (Map<String, Object>) redisTemplate.opsForValue().get(cacheKey);
+            cached = raw;
+        } catch (Exception e) {
+            log.warn("Tab 缓存反序列化失败，自动清除缓存 key={}: {}", cacheKey, e.getMessage());
+            redisTemplate.delete(cacheKey);
+        }
 
         if (cached != null) {
             log.info("Tab 缓存命中: supplierId={}, tab={}", supplierId, tabName);
