@@ -79,8 +79,7 @@ services:
       NOTIFY_WXBOT_WEBHOOK_URL: ${NOTIFY_WXBOT_WEBHOOK_URL}
       APP_ENV: prod
       APP_LOG_LEVEL: INFO
-    ports:
-      - "8080:8080"
+    # 生产环境不对外暴露端口，通过 nginx（frontend）内网代理访问
 
   frontend:
     build:
