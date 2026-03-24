@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.supply.risk.mapper.DashboardMapper">
+
+    <!-- 看板汇总统计指标：供应商各维度计数 + 待处理事项数 + 近7天新增事项数 -->
+    <select id="selectStats" resultType="map">
+        SELECT
+            COUNT(*) AS total,
+            COUNT(*) FILTER (WHERE cooperation_status = 'cooperating') AS cooperating,
+            COUNT(*) FILTER (WHERE health_level_cache = 'high_risk') AS highRisk,
+            COUNT(*) FILTER (WHERE health_level_cache = 'attention') AS attention,
+            COUNT(*) FILTER (WHERE health_level_cache = 'low_risk') AS lowRisk,
+            COUNT(*) FILTER (WHERE health_score_cache IS NULL) AS unscored,
+            (SELECT COUNT(*) FROM risk_event WHERE status IN ('open','confirmed','processing')) AS pending,
+            (SELECT COUNT(*) FROM risk_event WHERE triggered_at >= NOW() - INTERVAL '7 days') AS new7d
+        FROM supplier
+    </select>
+
+    <!-- 按健康等级分组统计供应商数量及占比 -->
+    <select id="selectHealthDistribution" resultType="map">
+        SELECT
+            COALESCE(health_level_cache, 'unscored') AS level,
+            COUNT(*) AS count,
+            ROUND(COUNT(*) * 100.0 / NULLIF((SELECT COUNT(*) FROM supplier), 0), 1) AS percentage
+        FROM supplier
+        GROUP BY COALESCE(health_level_cache, 'unscored')
+        ORDER BY count DESC
+    </select>
+
+    <!-- 按风险维度统计待处理事项数和关联供应商平均健康分 -->
+    <select id="selectRiskDimensionStats" resultType="map">
+        SELECT
+            re.risk_dimension AS dimension,
+            COUNT(*) FILTER (WHERE re.status IN ('open','confirmed','processing')) AS openCount,
+            ROUND(COALESCE(AVG(s.health_score_cache), 0)::numeric, 1) AS avgScore
+        FROM risk_event re
+        INNER JOIN supplier s ON s.id = re.supplier_id
+        GROUP BY re.risk_dimension
+        ORDER BY openCount DESC
+    </select>
+
+    <!-- 最近14天每天的高风险供应商数和新增事项数（使用 generate_series 保证连续日期） -->
+    <select id="selectRiskTrend" resultType="map">
+        SELECT
+            gs.day::date AS date,
+            COUNT(DISTINCT CASE WHEN shs.health_level = 'high_risk' THEN shs.supplier_id END) AS highRiskCount,
+            COUNT(DISTINCT re.id) AS newEvents
+        FROM generate_series(
+            CURRENT_DATE - INTERVAL '13 days',
+            CURRENT_DATE,
+            INTERVAL '1 day'
+        ) AS gs(day)
+        LEFT JOIN supplier_health_snapshot shs ON shs.snapshot_date = gs.day::date
+        LEFT JOIN risk_event re ON re.triggered_at::date = gs.day::date
+        GROUP BY gs.day
+        ORDER BY gs.day
+    </select>
+
+    <!-- 健康分最低的10家合作中供应商（含主要风险维度和待处理事项数） -->
+    <select id="selectTopRiskSuppliers" resultType="map">
+        SELECT
+            s.id,
+            s.name,
+            s.health_score_cache AS healthScore,
+            s.health_level_cache AS healthLevel,
+            TRIM(CONCAT(COALESCE(s.region_province,''), ' ', COALESCE(s.region_city,''))) AS region,
+            s.week_trend_cache AS weekTrend,
+            (SELECT re2.risk_dimension FROM risk_event re2
+             WHERE re2.supplier_id = s.id AND re2.status IN ('open','confirmed','processing')
+             GROUP BY re2.risk_dimension ORDER BY COUNT(*) DESC LIMIT 1) AS topDimension,
+            COUNT(re.id) FILTER (WHERE re.status IN ('open','confirmed','processing')) AS openEvents
+        FROM supplier s
+        LEFT JOIN risk_event re ON re.supplier_id = s.id
+        WHERE s.cooperation_status = 'cooperating' AND s.health_level_cache IS NOT NULL
+        GROUP BY s.id, s.name, s.health_score_cache, s.health_level_cache,
+                 s.region_province, s.region_city, s.week_trend_cache
+        ORDER BY s.health_score_cache ASC NULLS LAST
+        LIMIT 10
+    </select>
+
+    <!-- 最近触发的10条风险事项（JOIN 供应商表获取名称） -->
+    <select id="selectRecentEvents" resultType="map">
+        SELECT
+            re.id,
+            re.supplier_id AS supplierId,
+            s.name AS supplierName,
+            re.risk_dimension AS riskDimension,
+            re.description,
+            re.status,
+            re.triggered_at AS triggeredAt
+        FROM risk_event re
+        INNER JOIN supplier s ON s.id = re.supplier_id
+        ORDER BY re.triggered_at DESC
+        LIMIT 10
+    </select>
+
+</mapper>
