@@ -3,7 +3,7 @@ import {
   DashboardOutlined,
   TeamOutlined,
   AlertOutlined,
-  SettingOutlined,
+  // SettingOutlined,
 } from '@ant-design/icons';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
 import type { ReactNode } from 'react';
@@ -18,7 +18,7 @@ const menuItems = [
   { key: '/dashboard', icon: <DashboardOutlined />, label: '风险看板' },
   { key: '/suppliers', icon: <TeamOutlined />, label: '供应商管理' },
   { key: '/risk-events', icon: <AlertOutlined />, label: '预警中心' },
-  { key: '/settings', icon: <SettingOutlined />, label: '预警配置' },
+  // { key: '/settings', icon: <SettingOutlined />, label: '预警配置' },
 ];
 
 /** 页面整体布局组件 */
