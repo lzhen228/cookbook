@@ -151,9 +151,9 @@ export function Dashboard() {
       title: '健康分',
       dataIndex: 'health_score',
       width: 80,
-      render: (score: number, record) => (
+      render: (score: number | null, record) => (
         <Text style={{ color: HEALTH_LEVEL_CONFIG[record.health_level]?.color, fontWeight: 600 }}>
-          {score.toFixed(1)}
+          {score != null ? score.toFixed(1) : '-'}
         </Text>
       ),
     },
