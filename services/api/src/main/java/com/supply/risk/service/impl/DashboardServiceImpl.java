@@ -81,12 +81,12 @@ public class DashboardServiceImpl implements DashboardService {
     return new DashboardStats(
         toLong(m.get("total")),
         toLong(m.get("cooperating")),
-        toLong(m.get("highRisk")),
+        toLong(m.get("high_risk")),
         toLong(m.get("attention")),
-        toLong(m.get("lowRisk")),
+        toLong(m.get("low_risk")),
         toLong(m.get("unscored")),
         toLong(m.get("pending")),
-        toLong(m.get("new7d"))
+        toLong(m.get("new_7d"))
     );
   }
 
@@ -116,8 +116,8 @@ public class DashboardServiceImpl implements DashboardService {
     return list.stream()
         .map(m -> new RiskDimensionStat(
             (String) m.get("dimension"),
-            toLong(m.get("openCount")),
-            toBigDecimal(m.get("avgScore"))
+            toLong(m.get("open_count")),
+            toBigDecimal(m.get("avg_score"))
         ))
         .collect(Collectors.toList());
   }
@@ -132,8 +132,8 @@ public class DashboardServiceImpl implements DashboardService {
     return list.stream()
         .map(m -> new RiskTrendPoint(
             toDateString(m.get("date")),
-            toLong(m.get("highRiskCount")),
-            toLong(m.get("newEvents"))
+            toLong(m.get("high_risk_count")),
+            toLong(m.get("new_events"))
         ))
         .collect(Collectors.toList());
   }
@@ -149,12 +149,12 @@ public class DashboardServiceImpl implements DashboardService {
         .map(m -> new TopRiskSupplier(
             toLong(m.get("id")),
             (String) m.get("name"),
-            toBigDecimal(m.get("healthScore")),
-            (String) m.get("healthLevel"),
+            toBigDecimal(m.get("health_score")),
+            (String) m.get("health_level"),
             (String) m.get("region"),
-            toBigDecimal(m.get("weekTrend")),
-            (String) m.get("topDimension"),
-            toLong(m.get("openEvents"))
+            toBigDecimal(m.get("week_trend")),
+            (String) m.get("top_dimension"),
+            toLong(m.get("open_events"))
         ))
         .collect(Collectors.toList());
   }
@@ -169,12 +169,12 @@ public class DashboardServiceImpl implements DashboardService {
     return list.stream()
         .map(m -> new DashboardRiskEvent(
             toLong(m.get("id")),
-            toLong(m.get("supplierId")),
-            (String) m.get("supplierName"),
-            (String) m.get("riskDimension"),
+            toLong(m.get("supplier_id")),
+            (String) m.get("supplier_name"),
+            (String) m.get("risk_dimension"),
             (String) m.get("description"),
             (String) m.get("status"),
-            toTimestampString(m.get("triggeredAt"))
+            toTimestampString(m.get("triggered_at"))
         ))
         .collect(Collectors.toList());
   }
