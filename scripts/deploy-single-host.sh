@@ -38,6 +38,17 @@ for name in scrm-api scrm-frontend scrm-postgres scrm-redis scrm-minio; do
   fi
 done
 
+# 释放宿主机端口（兼容非 Docker 进程占用，如历史直接部署的 Java 进程）
+for port in 8080 80; do
+  if fuser "${port}/tcp" &>/dev/null 2>&1; then
+    echo "[INFO] killing process on host port ${port}"
+    fuser -k "${port}/tcp" || true
+  elif ss -tlnp "sport = :${port}" 2>/dev/null | grep -q ":${port}"; then
+    pid=$(ss -tlnp "sport = :${port}" | grep -oP 'pid=\K[0-9]+' | head -1)
+    [[ -n "$pid" ]] && { echo "[INFO] killing pid ${pid} on port ${port}"; kill -9 "$pid" || true; }
+  fi
+done
+
 docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" up -d --build
 
 docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" ps
