@@ -78,72 +78,72 @@ jobs:
           echo "[✓] 代码同步完成 (commit: ${GITHUB_SHA::8})"
 
       - name: Write .env.prod on server
+        # 在 runner 侧构造文件内容，通过 stdin 管道传入服务器，避免 heredoc 缩进问题
         run: |
-          ssh -i ~/.ssh/id_ed25519 \
-            -o StrictHostKeyChecking=yes \
-            -o ConnectTimeout=30 \
-            "${{ secrets.PROD_USER }}@${{ secrets.PROD_SERVER }}" \
-            bash -s << EOF
-          cat > /opt/cookbook/.env.prod << 'ENVEOF'
-          DB_HOST=${{ secrets.DB_HOST }}
-          DB_PORT=${{ secrets.DB_PORT }}
-          DB_NAME=${{ secrets.DB_NAME }}
-          DB_USERNAME=${{ secrets.DB_USERNAME }}
-          DB_PASSWORD=${{ secrets.DB_PASSWORD }}
-          REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }}
-          JWT_SECRET=${{ secrets.JWT_SECRET }}
-          JWT_ACCESS_TOKEN_TTL_SECONDS=${{ secrets.JWT_ACCESS_TOKEN_TTL_SECONDS }}
-          JWT_REFRESH_TOKEN_TTL_SECONDS=${{ secrets.JWT_REFRESH_TOKEN_TTL_SECONDS }}
-          MINIO_ACCESS_KEY=${{ secrets.MINIO_ACCESS_KEY }}
-          MINIO_SECRET_KEY=${{ secrets.MINIO_SECRET_KEY }}
-          MINIO_BUCKET=${{ secrets.MINIO_BUCKET }}
-          KAFKA_BOOTSTRAP_SERVERS=${{ secrets.KAFKA_BOOTSTRAP_SERVERS }}
-          EXT_QICHA_API_KEY=${{ secrets.EXT_QICHA_API_KEY }}
-          EXT_QICHA_BASE_URL=${{ secrets.EXT_QICHA_BASE_URL }}
-          NOTIFY_WXBOT_WEBHOOK_URL=${{ secrets.NOTIFY_WXBOT_WEBHOOK_URL }}
-          ENVEOF
-          chmod 600 /opt/cookbook/.env.prod
+          {
+            echo "DB_HOST=${{ secrets.DB_HOST }}"
+            echo "DB_PORT=${{ secrets.DB_PORT }}"
+            echo "DB_NAME=${{ secrets.DB_NAME }}"
+            echo "DB_USERNAME=${{ secrets.DB_USERNAME }}"
+            echo "DB_PASSWORD=${{ secrets.DB_PASSWORD }}"
+            echo "REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }}"
+            echo "JWT_SECRET=${{ secrets.JWT_SECRET }}"
+            echo "JWT_ACCESS_TOKEN_TTL_SECONDS=${{ secrets.JWT_ACCESS_TOKEN_TTL_SECONDS }}"
+            echo "JWT_REFRESH_TOKEN_TTL_SECONDS=${{ secrets.JWT_REFRESH_TOKEN_TTL_SECONDS }}"
+            echo "MINIO_ACCESS_KEY=${{ secrets.MINIO_ACCESS_KEY }}"
+            echo "MINIO_SECRET_KEY=${{ secrets.MINIO_SECRET_KEY }}"
+            echo "MINIO_BUCKET=${{ secrets.MINIO_BUCKET }}"
+            echo "KAFKA_BOOTSTRAP_SERVERS=${{ secrets.KAFKA_BOOTSTRAP_SERVERS }}"
+            echo "EXT_QICHA_API_KEY=${{ secrets.EXT_QICHA_API_KEY }}"
+            echo "EXT_QICHA_BASE_URL=${{ secrets.EXT_QICHA_BASE_URL }}"
+            echo "NOTIFY_WXBOT_WEBHOOK_URL=${{ secrets.NOTIFY_WXBOT_WEBHOOK_URL }}"
+          } | ssh -i ~/.ssh/id_ed25519 \
+              -o StrictHostKeyChecking=yes \
+              -o ConnectTimeout=30 \
+              "${{ secrets.PROD_USER }}@${{ secrets.PROD_SERVER }}" \
+              "cat > /opt/cookbook/.env.prod && chmod 600 /opt/cookbook/.env.prod"
           echo "[✓] .env.prod 已写入"
-          EOF
 
       - name: Bootstrap PostgreSQL on server
+        # 注意：${{ }} 由 GitHub Actions 展开后再传给 shell，单引号 heredoc 只阻止 shell 展开
+        env:
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_USER: ${{ secrets.DB_USERNAME }}
+          DB_PASS: ${{ secrets.DB_PASSWORD }}
         run: |
           ssh -i ~/.ssh/id_ed25519 \
             -o StrictHostKeyChecking=yes \
             -o ConnectTimeout=30 \
             "${{ secrets.PROD_USER }}@${{ secrets.PROD_SERVER }}" \
-            bash -s << 'REMOTE'
+            DB_NAME="$DB_NAME" DB_USER="$DB_USER" DB_PASS="$DB_PASS" bash -s << 'REMOTE'
           set -euo pipefail
-
-          DB_NAME="${{ secrets.DB_NAME }}"
-          DB_USER="${{ secrets.DB_USERNAME }}"
-          DB_PASS="${{ secrets.DB_PASSWORD }}"
-
           echo "=== 初始化 PostgreSQL ==="
 
           # 创建用户（已存在则跳过）
           sudo -u postgres psql -tc \
             "SELECT 1 FROM pg_roles WHERE rolname='${DB_USER}'" | grep -q 1 \
             || sudo -u postgres psql -c \
-               "CREATE USER ${DB_USER} WITH PASSWORD '${DB_PASS}';"
+               "CREATE USER \"${DB_USER}\" WITH PASSWORD '${DB_PASS}';"
 
           # 创建数据库（已存在则跳过）
           sudo -u postgres psql -tc \
             "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'" | grep -q 1 \
             || sudo -u postgres psql -c \
-               "CREATE DATABASE ${DB_NAME} OWNER ${DB_USER};"
+               "CREATE DATABASE \"${DB_NAME}\" OWNER \"${DB_USER}\";"
 
           # 授权
           sudo -u postgres psql -c \
-            "GRANT ALL PRIVILEGES ON DATABASE ${DB_NAME} TO ${DB_USER};"
+            "GRANT ALL PRIVILEGES ON DATABASE \"${DB_NAME}\" TO \"${DB_USER}\";"
 
           # 添加 Docker 网段访问权限（幂等）
-          HBA=$(sudo -u postgres psql -t -c "SHOW hba_file;" | tr -d ' ')
+          HBA=$(sudo -u postgres psql -t -c "SHOW hba_file;" | tr -d ' \n')
           RULE="host    ${DB_NAME}    ${DB_USER}    172.17.0.0/16    md5"
           grep -qF "${DB_USER}" "$HBA" \
             || echo "$RULE" | sudo tee -a "$HBA" > /dev/null
 
-          sudo systemctl reload postgresql || sudo service postgresql reload
+          sudo systemctl reload postgresql 2>/dev/null \
+            || sudo service postgresql reload 2>/dev/null \
+            || sudo -u postgres pg_ctl reload -D "$(sudo -u postgres psql -t -c 'SHOW data_directory;' | tr -d ' \n')"
           echo "[✓] PostgreSQL 初始化完成"
           REMOTE
 
