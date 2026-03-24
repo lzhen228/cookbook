@@ -27,4 +27,64 @@
         WHERE re.supplier_id = #{supplierId}
     </select>
 
+    <!-- 分页查询风险预警事项列表（JOIN 供应商表获取供应商名称） -->
+    <select id="listAlerts" resultType="com.supply.risk.model.dto.RiskAlertRow">
+        SELECT
+            re.id,
+            re.supplier_id,
+            s.name AS supplier_name,
+            re.risk_dimension,
+            re.description,
+            re.status,
+            re.triggered_at,
+            COALESCE(re.closed_at, re.triggered_at) AS updated_at,
+            re.source_url,
+            re.close_note
+        FROM risk_event re
+        INNER JOIN supplier s ON s.id = re.supplier_id
+        <where>
+            <if test="query.status != null and query.status != ''">
+                AND re.status = #{query.status}
+            </if>
+            <if test="query.riskDimension != null and query.riskDimension != ''">
+                AND re.risk_dimension = #{query.riskDimension}
+            </if>
+            <if test="query.keyword != null and query.keyword != ''">
+                AND re.description ILIKE '%' || #{query.keyword} || '%'
+            </if>
+        </where>
+        ORDER BY re.triggered_at DESC
+        LIMIT #{query.pageSize} OFFSET #{query.offset}
+    </select>
+
+    <!-- 统计符合筛选条件的风险预警事项总数 -->
+    <select id="countAlerts" resultType="long">
+        SELECT COUNT(*)
+        FROM risk_event re
+        INNER JOIN supplier s ON s.id = re.supplier_id
+        <where>
+            <if test="query.status != null and query.status != ''">
+                AND re.status = #{query.status}
+            </if>
+            <if test="query.riskDimension != null and query.riskDimension != ''">
+                AND re.risk_dimension = #{query.riskDimension}
+            </if>
+            <if test="query.keyword != null and query.keyword != ''">
+                AND re.description ILIKE '%' || #{query.keyword} || '%'
+            </if>
+        </where>
+    </select>
+
+    <!-- 按状态分组统计风险预警事项数量（全量，不受分页条件影响） -->
+    <select id="statsGroupByStatus" resultType="map">
+        SELECT
+            COUNT(*) AS total,
+            COUNT(*) FILTER (WHERE status = 'open') AS open,
+            COUNT(*) FILTER (WHERE status = 'confirmed') AS confirmed,
+            COUNT(*) FILTER (WHERE status = 'processing') AS processing,
+            COUNT(*) FILTER (WHERE status = 'closed') AS closed,
+            COUNT(*) FILTER (WHERE status = 'dismissed') AS dismissed
+        FROM risk_event
+    </select>
+
 </mapper>
