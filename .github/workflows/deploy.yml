@@ -135,11 +135,11 @@ jobs:
           sudo -u postgres psql -c \
             "GRANT ALL PRIVILEGES ON DATABASE \"${DB_NAME}\" TO \"${DB_USER}\";"
 
-          # 添加 Docker 网段访问权限（幂等）
+          # 添加 Docker 网段访问权限（覆盖 172.16/12 和 192.168/16，幂等）
           HBA=$(sudo -u postgres psql -t -c "SHOW hba_file;" | tr -d ' \n')
-          RULE="host    ${DB_NAME}    ${DB_USER}    172.17.0.0/16    md5"
-          grep -qF "${DB_USER}" "$HBA" \
-            || echo "$RULE" | sudo tee -a "$HBA" > /dev/null
+          grep -qF "${DB_USER}" "$HBA" && sed -i "/${DB_USER}/d" "$HBA"
+          echo "host    ${DB_NAME}    ${DB_USER}    172.16.0.0/12    md5" | sudo tee -a "$HBA" > /dev/null
+          echo "host    ${DB_NAME}    ${DB_USER}    192.168.0.0/16   md5" | sudo tee -a "$HBA" > /dev/null
 
           sudo systemctl reload postgresql 2>/dev/null \
             || sudo service postgresql reload 2>/dev/null \
