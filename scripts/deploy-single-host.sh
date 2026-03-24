@@ -30,12 +30,11 @@ cd "${ROOT_DIR}"
 # 停止旧容器（保留 volume 数据），避免端口冲突
 docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" down --remove-orphans || true
 
-# 强制停止仍占用关键端口的游离容器（历史部署残留，compose down 清不到）
-for port in 8080 80; do
-  cid=$(docker ps -q --filter "publish=${port}" 2>/dev/null || true)
-  if [[ -n "$cid" ]]; then
-    echo "[INFO] stopping stale container on port ${port}: ${cid}"
-    docker stop "$cid" || true
+# 按已知容器名强制清理游离容器（历史部署残留，compose down 清不到同名旧容器）
+for name in scrm-api scrm-frontend scrm-postgres scrm-redis scrm-minio; do
+  if docker inspect "$name" &>/dev/null; then
+    echo "[INFO] removing stale container: ${name}"
+    docker rm -f "$name" || true
   fi
 done
 
